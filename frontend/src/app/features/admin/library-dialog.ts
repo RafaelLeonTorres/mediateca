@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormField, disabled, form, maxLength, required, submit } from '@angular/forms/signals';
 import { MatButton, MatIconButton } from '@angular/material/button';
 import {
@@ -25,6 +25,12 @@ export interface LibraryDialogData {
 interface LibraryModel {
   name: string;
   type: LibraryType;
+}
+
+/** Carpeta elegida: la ruta del servidor es la que se guarda y la de mostrar, la que se ve en pantalla. */
+interface ChosenFolder {
+  path: string;
+  displayPath: string;
 }
 
 /** Crear o editar una biblioteca: nombre, tipo y carpetas (elegidas con el selector de carpetas). */
@@ -75,7 +81,7 @@ interface LibraryModel {
         @if (browsing()) {
           <div class="picker">
             <p class="current">
-              {{ listing()?.path ?? 'Carpetas de medios del servidor' }}
+              {{ listing()?.displayPath ?? listing()?.path ?? 'Tus discos y carpetas de medios' }}
             </p>
             @if (loadingFolders()) {
               <mat-progress-bar mode="indeterminate" aria-label="Cargando carpetas" />
@@ -98,14 +104,26 @@ interface LibraryModel {
               }
               @for (folder of listing()?.folders ?? []; track folder.path) {
                 <li>
-                  <button matButton="text" type="button" (click)="browse(folder.path)">
-                    <mat-icon aria-hidden="true">folder</mat-icon>
+                  <button
+                    matButton="text"
+                    type="button"
+                    [attr.title]="folder.displayPath"
+                    (click)="browse(folder.path)"
+                  >
+                    <mat-icon aria-hidden="true">{{ atRoot() ? 'storage' : 'folder' }}</mat-icon>
                     {{ folder.name }}
                   </button>
                 </li>
               } @empty {
                 @if (!loadingFolders() && !browseError()) {
-                  <li class="muted">No hay subcarpetas aquí.</li>
+                  @if (atRoot()) {
+                    <li class="muted">
+                      No se ven carpetas. En Windows, corre setup.ps1 para montar tus discos; en
+                      Linux o macOS, monta tus carpetas en /discos o usa MEDIA_PATH (ver README).
+                    </li>
+                  } @else {
+                    <li class="muted">No hay subcarpetas aquí.</li>
+                  }
                 }
               }
             </ul>
@@ -122,16 +140,16 @@ interface LibraryModel {
             </div>
           </div>
         } @else {
-          @if (paths().length > 0) {
+          @if (chosen().length > 0) {
             <ul class="paths">
-              @for (path of paths(); track path) {
+              @for (folder of chosen(); track folder.path) {
                 <li>
-                  <span class="path">{{ path }}</span>
+                  <span class="path">{{ folder.displayPath }}</span>
                   <button
                     matIconButton
                     type="button"
-                    [attr.aria-label]="'Quitar la carpeta ' + path"
-                    (click)="removePath(path)"
+                    [attr.aria-label]="'Quitar la carpeta ' + folder.displayPath"
+                    (click)="removePath(folder.path)"
                   >
                     <mat-icon aria-hidden="true">close</mat-icon>
                   </button>
@@ -240,7 +258,13 @@ export class LibraryDialog {
     disabled(path.type, () => this.editing);
   });
 
-  protected readonly paths = signal<string[]>([...(this.data.library?.paths ?? [])]);
+  /** Carpetas elegidas. Por dentro se guardan con su ruta del servidor, que es la que se manda. */
+  protected readonly chosen = signal<ChosenFolder[]>(
+    (this.data.library?.paths ?? []).map((path, index) => ({
+      path,
+      displayPath: this.data.library?.displayPaths[index] ?? path,
+    })),
+  );
   protected readonly pathsError = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly saving = signal(false);
@@ -249,6 +273,9 @@ export class LibraryDialog {
   protected readonly listing = signal<FolderListing | null>(null);
   protected readonly loadingFolders = signal(false);
   protected readonly browseError = signal<string | null>(null);
+
+  /** ¿Se ve la lista inicial (discos y carpetas de medios) y no el interior de una carpeta? */
+  protected readonly atRoot = computed(() => this.listing()?.path === null);
 
   protected async openPicker(): Promise<void> {
     this.browsing.set(true);
@@ -269,22 +296,24 @@ export class LibraryDialog {
   }
 
   protected choose(): void {
-    const path = this.listing()?.path;
-    if (path && !this.paths().includes(path)) {
-      this.paths.update((paths) => [...paths, path]);
+    const listing = this.listing();
+    const path = listing?.path;
+    if (path && !this.chosen().some((folder) => folder.path === path)) {
+      const displayPath = listing?.displayPath ?? path;
+      this.chosen.update((folders) => [...folders, { path, displayPath }]);
     }
     this.pathsError.set(null);
     this.browsing.set(false);
   }
 
   protected removePath(path: string): void {
-    this.paths.update((paths) => paths.filter((p) => p !== path));
+    this.chosen.update((folders) => folders.filter((folder) => folder.path !== path));
   }
 
   protected async save(): Promise<void> {
     this.error.set(null);
     await submit(this.libraryForm, async () => {
-      if (this.paths().length === 0) {
+      if (this.chosen().length === 0) {
         this.pathsError.set('Agrega al menos una carpeta.');
         return;
       }
@@ -293,10 +322,12 @@ export class LibraryDialog {
       try {
         const { name, type } = this.model();
         const library = this.data.library;
+        // Al servidor siempre van las rutas del contenedor, no las que se muestran.
+        const paths = this.chosen().map((folder) => folder.path);
         if (library) {
-          await this.api.update(library.id, { name: name.trim(), paths: this.paths() });
+          await this.api.update(library.id, { name: name.trim(), paths });
         } else {
-          await this.api.create({ name: name.trim(), type, paths: this.paths() });
+          await this.api.create({ name: name.trim(), type, paths });
         }
         this.dialogRef.close(true);
       } catch (error) {

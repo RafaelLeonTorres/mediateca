@@ -18,11 +18,19 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18").Build();
     private readonly string _dataPath = Path.Combine(Path.GetTempPath(), $"mediateca-pruebas-{Guid.NewGuid():N}");
     private readonly string _mediaPath = Path.Combine(Path.GetTempPath(), $"mediateca-medios-{Guid.NewGuid():N}");
+    private readonly string _drivesPath = Path.Combine(Path.GetTempPath(), $"mediateca-discos-{Guid.NewGuid():N}");
 
-    public MediatecaApiFactory() => Directory.CreateDirectory(_mediaPath);
+    public MediatecaApiFactory()
+    {
+        Directory.CreateDirectory(_mediaPath);
+        Directory.CreateDirectory(_drivesPath);
+    }
 
     /// <summary>Carpeta de medios de la prueba (<c>Storage:MediaRoots</c>): las bibliotecas tienen que quedar dentro de ella.</summary>
     public string MediaPath => _mediaPath;
+
+    /// <summary>Carpeta de discos de la prueba (<c>Storage:DrivesPath</c>): lo que en Docker es /discos, con una subcarpeta por disco.</summary>
+    public string DrivesPath => _drivesPath;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -39,6 +47,7 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
                 ["ConnectionStrings:Default"] = connectionString.ConnectionString,
                 ["Storage:DataPath"] = _dataPath,
                 ["Storage:MediaRoots:0"] = _mediaPath,
+                ["Storage:DrivesPath"] = _drivesPath,
                 // Las pruebas inician sesión muchas veces desde la misma IP: con el límite real
                 // (5 por minuto) la mayoría recibiría 429.
                 ["Auth:LoginRateLimit:PermitLimit"] = "1000",
@@ -59,7 +68,7 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
     {
         await base.DisposeAsync();
         await _postgres.DisposeAsync();
-        foreach (var folder in new[] { _dataPath, _mediaPath })
+        foreach (var folder in new[] { _dataPath, _mediaPath, _drivesPath })
         {
             if (Directory.Exists(folder))
             {

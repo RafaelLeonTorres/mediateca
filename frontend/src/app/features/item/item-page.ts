@@ -11,14 +11,18 @@ import {
   formatDuration,
   formatSize,
 } from '../../shared/item-display';
+import { PosterCard } from '../../shared/poster-card/poster-card';
 
 /** Tipos de elemento que tienen hijos (temporadas, episodios, pistas). */
 const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbum'];
 
-/** Detalle de un elemento: ficha, ruta de navegación y, según el tipo, temporadas, episodios o pistas. */
+/**
+ * Detalle de un elemento: ficha, ruta de navegación y, según el tipo, temporadas, episodios o pistas.
+ * Las temporadas y las carpetas de una serie ("Lat", "Sub") se ven como tarjetas, igual que en Jellyfin.
+ */
 @Component({
   selector: 'app-item-page',
-  imports: [MatChip, MatChipSet, MatIcon, MatProgressBar, RouterLink],
+  imports: [MatChip, MatChipSet, MatIcon, MatProgressBar, PosterCard, RouterLink],
   template: `
     @if (detail.isLoading()) {
       <mat-progress-bar mode="indeterminate" aria-label="Cargando" />
@@ -45,7 +49,7 @@ const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbu
         </ol>
       </nav>
 
-      <article class="detail">
+      <article class="detail" [class.wide]="current.kind === 'Episode'">
         <div class="poster">
           @if (current.hasImage && !imageFailed()) {
             <img
@@ -80,29 +84,72 @@ const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbu
       </article>
 
       @if (hasChildren()) {
-        <section aria-labelledby="children-title">
-          <h2 id="children-title">{{ childrenTitle() }}</h2>
-          @if (children.isLoading()) {
-            <mat-progress-bar mode="indeterminate" aria-label="Cargando" />
-          }
-          @if (childList().length === 0 && !children.isLoading()) {
+        @if (children.isLoading()) {
+          <mat-progress-bar mode="indeterminate" aria-label="Cargando" />
+        }
+
+        @if (seasons().length > 0) {
+          <section aria-labelledby="seasons-title">
+            <h2 id="seasons-title">Temporadas</h2>
+            <ul class="grid">
+              @for (season of seasons(); track season.id) {
+                <li>
+                  <app-poster-card
+                    [id]="season.id"
+                    [title]="season.title"
+                    [kind]="season.kind"
+                    [subtitle]="episodeCount(season)"
+                    [hasImage]="season.hasImage"
+                  />
+                </li>
+              }
+            </ul>
+          </section>
+        }
+
+        @if (entries().length > 0) {
+          <section aria-labelledby="children-title">
+            <h2 id="children-title">{{ entriesTitle() }}</h2>
+            <ol class="children">
+              @for (child of entries(); track child.id) {
+                <li>
+                  <a
+                    class="child"
+                    [class.episode]="child.kind === 'Episode'"
+                    [routerLink]="['/items', child.id]"
+                  >
+                    @if (child.kind === 'Episode') {
+                      <span class="thumb">
+                        @if (child.hasImage && !failedThumbs().has(child.id)) {
+                          <img
+                            [src]="image(child.id)"
+                            alt=""
+                            loading="lazy"
+                            (error)="thumbFailed(child.id)"
+                          />
+                        } @else {
+                          <mat-icon aria-hidden="true">{{ icon(child.kind) }}</mat-icon>
+                        }
+                      </span>
+                    }
+                    <span class="number">{{ childNumber(child) }}</span>
+                    <span class="child-title">{{ child.title }}</span>
+                    <span class="duration">{{ duration(child.durationSeconds) }}</span>
+                  </a>
+                </li>
+              }
+            </ol>
+          </section>
+        } @else if (seasons().length === 0 && !children.isLoading()) {
+          <section aria-labelledby="children-title">
+            <h2 id="children-title">{{ entriesTitle() }}</h2>
             <p class="muted">No hay elementos para mostrar.</p>
-          }
-          <ol class="children">
-            @for (child of childList(); track child.id) {
-              <li>
-                <a class="child" [routerLink]="['/items', child.id]">
-                  <span class="number">{{ childNumber(child) }}</span>
-                  <span class="child-title">{{ child.title }}</span>
-                  <span class="duration">{{ duration(child.durationSeconds) }}</span>
-                </a>
-              </li>
-            }
-          </ol>
-        </section>
+          </section>
+        }
       }
     }
   `,
+  styleUrls: ['../../shared/poster-grid.scss'],
   styles: `
     .crumbs ol {
       display: flex;
@@ -153,6 +200,15 @@ const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbu
       width: 100%;
       height: 100%;
       object-fit: cover;
+    }
+
+    /* La imagen de un episodio es una miniatura 16:9, no un póster. */
+    .detail.wide {
+      grid-template-columns: minmax(200px, 400px) 1fr;
+    }
+
+    .detail.wide .poster {
+      aspect-ratio: 16 / 9;
     }
 
     .placeholder {
@@ -215,8 +271,30 @@ const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbu
       outline: none;
     }
 
+    .child.episode {
+      grid-template-columns: 128px 3rem 1fr auto;
+      padding: 8px 16px 8px 8px;
+    }
+
     .child:hover {
       background: var(--mat-sys-surface-container);
+    }
+
+    .thumb {
+      display: grid;
+      place-items: center;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      border-radius: var(--mat-sys-corner-small);
+      background: var(--mat-sys-surface-container-high);
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    .thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
 
     .number,
@@ -244,6 +322,19 @@ const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbu
       .poster {
         max-width: 200px;
       }
+
+      .detail.wide {
+        grid-template-columns: 1fr;
+      }
+
+      .detail.wide .poster {
+        max-width: 100%;
+      }
+
+      .child.episode {
+        grid-template-columns: 96px 2rem 1fr auto;
+        gap: 8px;
+      }
     }
   `,
 })
@@ -265,22 +356,27 @@ export class ItemPage {
   );
   protected readonly childList = computed(() => this.children.value() ?? []);
 
+  /** Temporadas y carpetas (Lat, Sub), como tarjetas. */
+  protected readonly seasons = computed(() => this.childList().filter((child) => child.kind === 'Season'));
+
+  /** Episodios sueltos o pistas, como lista. */
+  protected readonly entries = computed(() => this.childList().filter((child) => child.kind !== 'Season'));
+
+  /** Miniaturas de episodio que respondieron con error. Se reinicia al cambiar de elemento. */
+  protected readonly failedThumbs = linkedSignal<ReadonlySet<string>>(() => {
+    this.id();
+    return new Set<string>();
+  });
+
   /** La imagen respondió con error: se muestra el marcador. Se reinicia al cambiar de elemento. */
   protected readonly imageFailed = linkedSignal<boolean>(() => {
     this.id();
     return false;
   });
 
-  protected readonly childrenTitle = computed(() => {
-    switch (this.item()?.kind) {
-      case 'Series':
-        return 'Temporadas';
-      case 'Season':
-        return 'Episodios';
-      default:
-        return 'Pistas';
-    }
-  });
+  protected readonly entriesTitle = computed(() =>
+    this.item()?.kind === 'MusicAlbum' ? 'Pistas' : 'Episodios',
+  );
 
   /** Línea de datos: año, clasificación, calificación, artista, duración y tamaño. */
   protected readonly meta = computed(() => {
@@ -328,19 +424,28 @@ export class ItemPage {
     return formatDuration(seconds);
   }
 
-  /** Número que se muestra a la izquierda: episodio, pista (con disco si hay varios) o temporada. */
+  protected episodeCount(season: ChildItem): string {
+    const count = season.childCount ?? 0;
+    return count === 1 ? '1 episodio' : `${count} episodios`;
+  }
+
+  protected thumbFailed(id: string): void {
+    this.failedThumbs.update((failed) => new Set(failed).add(id));
+  }
+
+  /** Número que se muestra a la izquierda: episodio (o su número absoluto) o pista (con disco si hay varios). */
   protected childNumber(child: ChildItem): string {
     switch (child.kind) {
-      case 'Episode':
-        return child.episodeNumber !== null ? `${child.episodeNumber}` : '';
+      case 'Episode': {
+        const number = child.episodeNumber ?? child.absoluteNumber;
+        return number !== null ? `${number}` : '';
+      }
       case 'Track': {
         const track = child.trackNumber ?? '';
         return child.discNumber && child.discNumber > 1
           ? `${child.discNumber}-${track}`
           : `${track}`;
       }
-      case 'Season':
-        return child.seasonNumber === 0 ? 'Esp.' : `T${child.seasonNumber ?? ''}`;
       default:
         return '';
     }

@@ -18,8 +18,8 @@ Dónde vive cada cosa:
 
 - **Bibliotecas** de música y de video (películas, series y anime). Cada una apunta a una o varias carpetas del servidor.
 - **Escaneo** de esas carpetas: detecta archivos nuevos, modificados y eliminados.
-- **Metadatos** de cada película, serie y anime: título, año, clasificación, resumen, géneros, calificación y póster, obtenidos de IMDb (a través de OMDb) y de AniDB. La música usa las etiquetas de sus archivos.
-- **Identificar**: corregir una coincidencia equivocada buscando de nuevo o pegando el ID de IMDb (`tt0118799`) o de AniDB.
+- **Metadatos** de cada película, serie y anime: título, año, clasificación, resumen, géneros, calificación y póster. Las películas y series los toman de IMDb (a través de OMDb) y el anime de AniList, que además trae estudios, etiquetas, fondo y horario de emisión, como en Jellyfin. La música usa las etiquetas de sus archivos.
+- **Identificar**: corregir una coincidencia equivocada buscando de nuevo o pegando el ID de IMDb (`tt0118799`) o de AniList (el número de su dirección, `anilist.co/anime/21`).
 - **Usuarios y permisos**: el administrador crea usuarios y decide a qué bibliotecas entra cada uno.
 - **Reproducción en el navegador**: video con avance y retroceso, música por álbum con una barra de reproducción fija, y "Continuar viendo".
 - **Primer arranque**: si la base de datos no existe, la app la crea con sus tablas; si no hay usuarios, pide crear al administrador.
@@ -28,7 +28,7 @@ Dónde vive cada cosa:
 
 - Transcodificación con FFmpeg: el MVP reproduce solo los formatos que el navegador soporta.
 - Subtítulos, TV en vivo, DLNA, apps móviles, plugins y perfiles infantiles.
-- Otros proveedores, como TMDb (resúmenes en español) o MusicBrainz (música). La arquitectura los admite, pero no entran en el MVP.
+- Otros proveedores, como TMDb (resúmenes en español), AniDB o MusicBrainz (música). La arquitectura los admite, pero no entran en el MVP.
 
 ---
 
@@ -77,10 +77,10 @@ flowchart LR
     end
     DB[("db: PostgreSQL 18")]
   end
-  FS[["Carpetas de medios (/media, solo lectura)"]]
+  FS[["Tus discos (/discos) y MEDIA_PATH (/media), solo lectura"]]
   DATA[["Datos de la app (/data): pósters y carátulas"]]
   OMDB[(OMDb: datos de IMDb)]
-  ANIDB[(AniDB)]
+  ANILIST[(AniList)]
   UI -- "páginas, /api con cookie + XSRF, video/audio con Range" --> WEB
   WEB -- "/api" --> API
   API --> DB
@@ -89,7 +89,7 @@ flowchart LR
   SCAN --> FS
   SCAN --> DATA
   META --> OMDB
-  META --> ANIDB
+  META --> ANILIST
   META --> DB
 ```
 
@@ -106,7 +106,8 @@ Estructura de carpetas:
 JellifinClon/                          F:\Respaldo\Respaldo\Cursos\JellifinClon (raíz del repositorio)
 ├── PLAN.md                            copia de este plan
 ├── README.md                          primer arranque, uso diario, configuración y desarrollo
-├── setup.ps1                          primer arranque en Windows: crea .env y levanta los contenedores
+├── setup.ps1                          primer arranque en Windows: crea .env, monta tus discos y levanta los contenedores
+├── bandeja.ps1                        instala el ícono de la bandeja de Windows
 ├── docker-compose.yml                 web, api, worker y db
 ├── .env.example                       contraseña, puertos, carpeta de medios, horario de escaneo y zona horaria (se copia a .env)
 ├── backend/
@@ -115,8 +116,9 @@ JellifinClon/                          F:\Respaldo\Respaldo\Cursos\JellifinClon 
 │   ├── src/
 │   │   ├── Mediateca.Api/             endpoints, autenticación y archivos de Angular
 │   │   ├── Mediateca.Core/            entidades, reglas, analizadores de nombres e interfaces
-│   │   ├── Mediateca.Infrastructure/  EF Core, migraciones, escáner, cola de escaneos, OMDb, AniDB e imágenes
-│   │   └── Mediateca.Worker/          escaneos de la cola, escaneo automático con Quartz y señal de vida
+│   │   ├── Mediateca.Infrastructure/  EF Core, migraciones, escáner, cola de escaneos, OMDb, AniList e imágenes
+│   │   ├── Mediateca.Worker/          escaneos de la cola, escaneo automático con Quartz y señal de vida
+│   │   └── Mediateca.Tray/            ícono de la bandeja de Windows (WinForms): iniciar, detener, abrir y registros
 │   └── tests/
 │       ├── Mediateca.UnitTests/
 │       └── Mediateca.IntegrationTests/  Testcontainers + WebApplicationFactory
@@ -143,7 +145,7 @@ erDiagram
 | Entidad | Campos principales |
 |---|---|
 | `Library` | Id, Name, Type (`Movies`, `Series`, `Anime`, `Music`), Paths (`text[]`), CreatedAt, LastScannedAt |
-| `MediaItem` (abstracta) | Id, LibraryId, ParentId, Title, SortTitle, Year, Overview, ContentRating, CommunityRating, Genres (`text[]`), ImdbId, AniDbId, PosterPath, DateAdded, MetadataStatus (`Pending`, `Matched`, `NotFound`, `Error`) |
+| `MediaItem` (abstracta) | Id, LibraryId, ParentId, Title, SortTitle, Year, Overview, ContentRating, CommunityRating, Genres (`text[]`), ImdbId, AniListId, PosterPath, DateAdded, MetadataStatus (`Pending`, `Matched`, `NotFound`, `Error`) |
 | `PlayableItem` (abstracta, hereda de `MediaItem`) | FilePath, FileSize, FileModifiedAt, DurationSeconds |
 | `Movie`, `Episode`, `Track` | heredan de `PlayableItem`. Episode: SeasonNumber, EpisodeNumber, AbsoluteNumber. Track: TrackNumber, DiscNumber, Artist |
 | `Series`, `Season`, `MusicAlbum` | heredan de `MediaItem`. Season: SeasonNumber. MusicAlbum: AlbumArtist |
@@ -168,7 +170,7 @@ Detalles que vale la pena mostrar en el portafolio:
 
 1. Al iniciar, la API ejecuta `await db.Database.MigrateAsync()`. Si la base no existe, Npgsql la crea y aplica todas las migraciones; si ya existe, solo aplica las pendientes. El usuario de PostgreSQL necesita permiso `CREATEDB`.
 2. Los roles `Admin` y `Usuario` se siembran con `UseAsyncSeeding` de EF Core.
-3. Se crea la carpeta de datos de la app (`data/`; en Docker, el volumen `appdata` montado en `/data`) para los pósters y el volcado de títulos de AniDB.
+3. Se crea la carpeta de datos de la app (`data/`; en Docker, el volumen `appdata` montado en `/data`) para los pósters y los fondos descargados.
 4. `GET /api/setup/status` responde `{ "needsSetup": true }` mientras no haya usuarios. Angular manda entonces a `/setup`, donde se crea el administrador con `POST /api/setup`. Ese endpoint solo funciona mientras no exista ningún usuario; después responde 404.
 
 ---
@@ -185,8 +187,11 @@ Detalles que vale la pena mostrar en el portafolio:
 
 ## 7. Escaneo de bibliotecas
 
-- En Docker, la carpeta de medios del equipo (`MEDIA_PATH` en `.env`) se monta de solo lectura en `/media`, y las bibliotecas apuntan a carpetas dentro de ella (por ejemplo, `/media/Peliculas`). Para agregar más carpetas se usa un `docker-compose.override.yml` local.
-- Las carpetas permitidas se configuran en `Storage:MediaRoots` (una lista; por omisión `/media`). La API rechaza cualquier carpeta de biblioteca fuera de esas raíces, y el selector de carpetas de la administración (`GET /api/admin/folders`) solo navega dentro de ellas. Fuera de Docker (por ejemplo, con `dotnet watch`) se define con user-secrets: `Storage:MediaRoots:0`.
+- **Cada biblioteca tiene su tipo (películas, series, anime o música) y sus propias carpetas, y se configura solo desde la app.** No hace falta configurar ninguna ruta antes de arrancar, y la app arranca aunque no haya bibliotecas ni carpetas.
+- En Docker, los discos del equipo se montan de solo lectura en `/discos/<letra>` (`/discos/C`, `/discos/F`...) dentro de `api` y `worker`. En Windows los genera `setup.ps1` en un `docker-compose.override.yml` (un montaje de larga sintaxis por disco fijo, con el comentario `# Generado por setup.ps1` en la primera línea; si ya existe un override sin esa marca, el script no lo toca). Al conectar un disco nuevo se vuelve a correr `setup.ps1`. En Linux y macOS el override se escribe a mano (ver README). Los montajes reemplazan a la carpeta única `/media`: `MEDIA_PATH` sigue existiendo, pero es opcional (por ejemplo, para un NAS) y su valor por omisión es `./media`.
+- Las carpetas permitidas son `Storage:MediaRoots` (una lista; por omisión `/media`) más `Storage:DrivesPath` (por omisión `/discos`), que se agrega siempre a esa lista. La API rechaza cualquier carpeta de biblioteca fuera de esas raíces, y el selector de carpetas de la administración (`GET /api/admin/folders`) solo navega dentro de ellas: la lista inicial muestra "Disco C:", "Disco F:"... (una entrada por subcarpeta de `/discos`) y "Carpeta de medios" (`/media`), y subir desde un disco regresa a esa lista. Si una de estas carpetas no existe, simplemente no aparece nada. Fuera de Docker (por ejemplo, con `dotnet watch`) se define con user-secrets: `Storage:MediaRoots:0`.
+- **Rutas para mostrar:** en la base de datos y en la API las carpetas son rutas del contenedor (`/discos/F/Peliculas`), y el cliente siempre manda esas. Para la pantalla, `MediaPaths.ToDisplayPath` las convierte a `F:\Peliculas` (`/discos/F` es `F:\`; lo que está en `/discos/<nombre que no es una letra>` y cualquier otra ruta se muestra igual). Las entradas del selector traen `displayPath` y las bibliotecas del administrador traen `displayPaths`, en el mismo orden que `paths`.
+- **Carpetas que no están:** si una carpeta de la biblioteca no se puede leer (por ejemplo, un disco desconectado), el escaneo termina como completado, no borra nada de lo que había en ella y deja en `ErrorMessage` un aviso en español con las rutas para mostrar; la pantalla de bibliotecas lo muestra. Si el disco desconectado es uno de los montados, Docker no puede iniciar `api` ni `worker` hasta que vuelva o hasta que se corra `setup.ps1` de nuevo (el origen de un montaje tiene que existir).
 - Se dispara con un botón en la administración (`POST /api/admin/libraries/{id}/scan`, o `POST /api/admin/libraries/scan-all` para todas) y, de forma automática, con el horario de más abajo. En los dos casos solo se pone un `ScanJob` en la cola; quien escanea es el worker.
 - `ScanJob` guarda el avance y Angular lo consulta cada 2 segundos; SignalR queda como extensión. Si un escaneo sigue en cola después de 30 segundos, la pantalla avisa que quizá el worker no está corriendo.
 - **Incremental:** compara ruta, tamaño y fecha de modificación con lo guardado. Lo nuevo se crea, lo modificado se actualiza y lo que ya no existe se elimina. Los cambios se guardan en lotes.
@@ -226,10 +231,19 @@ Convenciones de nombres:
 |---|---|---|
 | Películas | `Nombre (Año)/archivo` o `Nombre (Año).ext` | `Películas/Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4` |
 | Series | `Serie (Año)/Temporada NN/… SxxEyy` | `Series/Mi Serie (2019)/Temporada 01/Mi Serie S01E02.mkv` |
-| Anime | `Serie/… - NN` (número absoluto) o `SxxEyy`; se ignoran las etiquetas entre corchetes | `Anime/Mi Anime/[Grupo] Mi Anime - 05 [1080p].mkv` |
+| Anime | `Serie/… - NN` o `Serie/NN.ext` (número absoluto), o `SxxEyy`; se ignoran las etiquetas entre corchetes | `Anime/Mi Anime/[Grupo] Mi Anime - 05 [1080p].mkv` o `Anime/Mi Anime/Lat/05.mp4` |
 | Música | `Artista/Álbum/NN - Canción`, completado con las etiquetas del archivo | `Música/Artista/Álbum (2020)/01 - Canción.flac` |
 
-- Etiquetas opcionales en el nombre de la carpeta para no depender de la búsqueda: `[imdbid-tt0118799]` y `[anidbid-23]`.
+- Etiquetas opcionales en el nombre de la carpeta para no depender de la búsqueda: `[imdbid-tt0118799]` y `[anilistid-21]` (en la fase 4 reemplaza a `[anidbid-23]`).
+- **Carpetas dentro de una serie:**
+  - Una carpeta de temporada (`Temporada 01`, `Season 2`, `Especiales`) es esa temporada.
+  - Cualquier otra carpeta dentro de la serie se muestra con su nombre tal cual, como una temporada sin número con sus propios episodios, igual que en Jellyfin. Por ejemplo, `Lat` y `Sub` con los mismos episodios en dos idiomas.
+  - Si hay carpetas anidadas, el nombre las une con ` / `.
+- **Especiales:** `Especial01`, `Special 2`, `SP03` u `OVA 1` en el nombre del archivo van a la temporada 0 ("Especiales"). Si están dentro de una carpeta, se quedan en ella.
+- **Imágenes junto a los medios**, con los nombres con que Jellyfin las guarda junto a los videos:
+  - `poster`, `folder` o `cover` (`.jpg`, `.jpeg` o `.png`) es el póster de la serie, la película o el álbum. Cada carpeta de la serie usa el suyo o, si no tiene, el de la serie.
+  - `NN-thumb.jpg` (el nombre del video más `-thumb`) es la miniatura del episodio.
+- **Volver a escanear** recalcula dónde va cada episodio aunque su archivo no haya cambiado, y lo mueve sin cambiarle el id. Así se acomoda lo que se escaneó con reglas anteriores, sin perder el progreso.
 - Los analizadores de nombres son funciones puras en `Core`, cubiertas con muchas pruebas `[Theory]`.
 
 ---
@@ -244,31 +258,44 @@ La API oficial de IMDb solo se ofrece de pago por AWS Data Exchange, y los conju
 - Entrega `Title`, `Year`, `Rated` (clasificación), `Plot` (resumen; `plot=full` para el largo), `Genre`, `imdbRating` y `Poster`, y acepta `type=movie|series|episode`.
 - Flujo: buscar por título y año, elegir el ID de IMDb, pedir el detalle (`i=tt…&plot=full`) y, en series, los episodios por temporada (`i=tt…&Season=N`).
 
-### AniDB
+### AniList
 
-API HTTP en XML con estas reglas obligatorias:
+API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con solicitudes `POST` en JSON. Es la fuente de los datos que muestra Jellyfin para el anime: resumen, géneros, etiquetas, estudios y emisión.
 
-- Hay que **registrar un cliente** en AniDB. Cada solicitud lleva `client`, `clientver` y `protover=1`.
-- **Como máximo una solicitud cada 2 segundos**, y nunca pedir el mismo anime más de una vez al día: AniDB banea a quien lo hace.
-- **Caché local obligatoria.** Las respuestas llegan comprimidas con gzip, y los errores vienen como `<error>` dentro del XML, no como códigos HTTP.
-- Para buscar por título se usa el volcado `anime-titles.xml.gz`: se descarga **como máximo una vez al día**, se guarda en `data/` y en él se busca el `aid`. Después se pide `request=anime&aid=…`.
-- Se aprovechan el título principal, `startdate` (año), `description` (resumen), `ratings` (calificación), `restricted` (contenido para adultos), las categorías (géneros), `picture` (póster) y la lista de episodios.
+- **No pide cuenta ni clave** para leer datos públicos. Es gratuita para uso no comercial, y "AniList" no se puede usar como nombre de la app.
+- **Límite de solicitudes:** normalmente 90 por minuto, pero hoy está en modo degradado con 30 por minuto, además de un limitador de ráfagas. Quien se pasa queda bloqueado 1 minuto, y las respuestas de ese bloqueo traen `Retry-After` y `X-RateLimit-Reset`. Todas traen `X-RateLimit-Limit` y `X-RateLimit-Remaining`.
+- **Búsqueda:** `Page(perPage: 10) { media(search: $titulo, type: ANIME) }` con el nombre de la carpeta, sin el año entre paréntesis ni "Season 2" o "2nd Season". Gana el resultado más parecido al título (romaji, inglés o sinónimos); el año y el formato (`TV`, `MOVIE`, `OVA`, `ONA`, `SPECIAL`) desempatan, y si la carpeta dice "Season 3" se prefiere el resultado de esa temporada.
+- **Detalle (`Media(id: …)`):**
+  - Títulos: `title` (`romaji`, `english`, `native`).
+  - Resumen: `description`. Llega con HTML; se limpia a texto con saltos de línea.
+  - Fechas y estado: `startDate`, `endDate`, `status`, `season` y `seasonYear`.
+  - Episodios: `episodes` y `duration`.
+  - Clasificación: `genres` y `tags` (sin los marcados como spoiler).
+  - Producción: `studios` (el de animación primero).
+  - Calificación y contenido: `averageScore` (de 0 a 100) e `isAdult`.
+  - Imágenes: `coverImage.extraLarge` (póster) y `bannerImage` (fondo).
+  - Emisión: `nextAiringEpisode`, para "Se emite los martes a las 23:00".
+  - Enlaces: `externalLinks` e `idMal`.
+  - `streamingEpisodes`: títulos y miniaturas de episodios, cuando los hay.
+- Los errores llegan en un arreglo `errors`; un 404 significa que no existe ese ID.
+- Las carpetas Lat y Sub no cambian nada aquí: los datos son de la serie y sus carpetas los comparten.
 
 ### Qué se guarda como "clasificación"
 
 - Películas y series: el campo `Rated` de OMDb (`PG-13`, `TV-MA`, etc.).
-- Anime: "18+" cuando AniDB lo marca como `restricted`; si no, queda sin clasificación.
-- La calificación de la comunidad (IMDb o AniDB) se guarda aparte, en `CommunityRating`.
+- Anime: "18+" cuando AniList lo marca como `isAdult`; si no, queda sin clasificación.
+- La calificación de la comunidad se guarda aparte, en `CommunityRating`, de 0 a 10: la de IMDb tal cual y la de AniList (`averageScore`) dividida entre 10.
 
 ### Implementación
 
-- Interfaz `IMetadataProvider` (`SearchAsync`, `GetDetailsAsync`) con `OmdbProvider` y `AniDbProvider`. El proveedor depende del tipo de biblioteca: películas y series usan OMDb, y anime usa AniDB.
-- `HttpClient` tipados con tiempos de espera (`Microsoft.Extensions.Http.Resilience`). AniDB tiene un limitador compartido de 1 solicitud cada 2 s (`System.Threading.RateLimiting`) y **no** reintenta ante un error de baneo.
+- Interfaz `IMetadataProvider` (`SearchAsync`, `GetDetailsAsync`) con `OmdbProvider` y `AniListProvider`. El proveedor depende del tipo de biblioteca: películas y series usan OMDb, y anime usa AniList, también para las películas de anime que están en esa biblioteca.
+- `HttpClient` tipados con tiempos de espera (`Microsoft.Extensions.Http.Resilience`). AniList tiene un limitador compartido de 1 solicitud cada 2 s (`System.Threading.RateLimiting`, 30 por minuto). Ante un 429, la cola espera lo que diga `Retry-After` antes de seguir.
+- La cola de metadatos la procesa el worker, igual que los escaneos. La API solo consulta a los proveedores cuando el administrador usa Identificar.
 - `MetadataCache` guarda cada respuesta. Si OMDb responde "Daily request limit reached!", la cola de metadatos se pausa hasta el día siguiente.
 - Después de cada escaneo, los elementos `Pending` entran en una cola de metadatos. El estado (`Matched`, `NotFound`, `Error`) se ve en la administración.
 - **Identificar:** un diálogo muestra los resultados de búsqueda del proveedor y permite pegar un ID directamente. **Actualizar metadatos** vuelve a pedir los datos, respetando la caché.
-- Los pósters se descargan una sola vez a `data/images/{itemId}.jpg` y se sirven con cabeceras de caché desde `/api/items/{id}/image`. AniDB solo entrega el nombre del archivo de la imagen: en la fase 4, arma la URL con el dominio que indique su documentación vigente.
-- Los resúmenes de OMDb y AniDB llegan en inglés. Para tenerlos en español haría falta agregar TMDb como tercer proveedor (extensión).
+- **Imágenes:** mandan las que dejó Jellyfin junto a los videos (`folder.jpg`, `backdrop.jpg` y `01-thumb.jpg`). Si no hay, el póster y el fondo del proveedor se descargan una sola vez a `data/images/` y se sirven con cabeceras de caché desde `/api/items/{id}/image`. AniList entrega direcciones completas de sus imágenes.
+- Los resúmenes de OMDb y AniList llegan en inglés. Para tenerlos en español haría falta agregar TMDb como tercer proveedor (extensión).
 
 ---
 
@@ -337,7 +364,8 @@ Estructura y prácticas:
 - Las llaves de Data Protection (cookies y antiforgery) se guardan en la base de datos (`PersistKeysToDbContext`), así las sesiones siguen válidas cuando se recrea el contenedor de la API.
 - Todo endpoint pide sesión por defecto (política de respaldo); los públicos (`/api/health`, setup, login y `me`) se marcan con `AllowAnonymous`.
 - El setup usa un candado de PostgreSQL (`pg_advisory_xact_lock`) dentro de la transacción: aunque lleguen dos solicitudes a la vez, solo se crea un administrador.
-- La API y PostgreSQL solo se publican en `127.0.0.1`; desde la red local solo se llega a `web`. El `worker` no publica ningún puerto: solo se conecta a la base de datos, lee `/media` (de solo lectura) y escribe en `/data`.
+- La API y PostgreSQL solo se publican en `127.0.0.1`; desde la red local solo se llega a `web`. El `worker` no publica ningún puerto: solo se conecta a la base de datos, lee `/discos` y `/media` (de solo lectura) y escribe en `/data`.
+- Los discos se montan de solo lectura: ni la API ni el worker pueden modificar tus archivos. Navegar las carpetas del servidor (`GET /api/admin/folders`) es solo para administradores, y solo dentro de `/discos` y `/media`. Las imágenes (`/api/items/{id}/image`) y los streams solo salen de carpetas de biblioteca o de las carpetas de medios; nunca un archivo cualquiera del servidor.
 - Límite de intentos de inicio de sesión con el middleware de rate limiting (por ejemplo, 5 por minuto por IP).
 - Autorización en todos los endpoints: política `Admin` para la administración y regla de visibilidad para elementos, imágenes y streams.
 - El cliente nunca manda rutas de archivos. Las carpetas de las bibliotecas se validan al crearlas y los streams se limitan a esas carpetas.
@@ -349,8 +377,8 @@ Estructura y prácticas:
 
 - **Unitarias (xUnit + Moq):**
   - analizadores de nombres de películas, series y anime, con muchos casos;
-  - mapeo de respuestas de OMDb (JSON) y AniDB (XML) a partir de archivos de ejemplo, sin llamar a los servicios reales;
-  - el limitador de AniDB;
+  - mapeo de respuestas de OMDb (JSON) y AniList (JSON de GraphQL) a partir de archivos de ejemplo, sin llamar a los servicios reales;
+  - el limitador de AniList y la pausa ante un 429;
   - la regla de visibilidad.
 - **Integración (Testcontainers + WebApplicationFactory):**
   - con un PostgreSQL vacío, la app crea la base;
@@ -368,7 +396,7 @@ Estructura y prácticas:
 // appsettings.json: sin secretos
 {
   "ConnectionStrings": { "Default": "Host=localhost;Port=5433;Database=mediateca;Username=mediateca" },
-  "Storage": { "DataPath": "data" },
+  "Storage": { "DataPath": "data", "MediaRoots": [ "/media" ], "DrivesPath": "/discos" },
   "Scanning": {
     "DefaultCron": "0 0 3 * * ?",
     "DefaultEnabled": true,
@@ -378,15 +406,16 @@ Estructura y prácticas:
   },
   "Metadata": {
     "Omdb":  { "ApiKey": "" },
-    "AniDb": { "Client": "", "ClientVersion": 1 }
+    "AniList": { "RequestInterval": "00:00:02" }
   }
 }
 ```
 
-- En Docker, todo sale de `.env` (contraseña de PostgreSQL, puertos, `MEDIA_PATH`, `SCAN_CRON`, `TZ`, clave de OMDb y cliente de AniDB) y Compose lo pasa a la API y al worker como variables de entorno (`ConnectionStrings__Default`, `Scanning__DefaultCron`, `TZ`, `Metadata__Omdb__ApiKey`…).
+- En Docker, todo sale de `.env` (contraseña de PostgreSQL, puertos, `MEDIA_PATH`, `SCAN_CRON`, `TZ`, clave de OMDb) y Compose lo pasa a la API y al worker como variables de entorno (`ConnectionStrings__Default`, `Scanning__DefaultCron`, `TZ`, `Metadata__Omdb__ApiKey`…).
+- Sección `Storage`: `DataPath` es la carpeta de datos de la app; `MediaRoots` son las carpetas de medios (por omisión `/media`, el montaje de `MEDIA_PATH`, que es opcional) y `DrivesPath` (por omisión `/discos`) es la carpeta donde Docker monta los discos, una subcarpeta por disco. `DrivesPath` se suma siempre a las carpetas permitidas; en `appsettings.json` está solo como documentación, porque su valor por omisión es el mismo.
 - Sección `Scanning`: `DefaultCron` y `DefaultEnabled` son el horario inicial (`SCAN_CRON` en `.env`) y solo cuentan mientras no haya uno guardado; después manda el de la administración. `QueuePollInterval`, `ScheduleSyncInterval` y `MinimumInterval` ajustan cada cuánto mira la cola el worker, cada cuánto revisa si cambió el horario y el mínimo entre dos escaneos automáticos. `TZ` es la zona horaria en la que se interpretan los horarios. `.env.example` documenta cada variable y `.env` no se sube a git.
 - Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`. El worker comparte el mismo `UserSecretsId`, así que los user-secrets (cadena de conexión, `Storage:DataPath` y `Storage:MediaRoots:0`) se definen una vez para los dos.
-- Antes de la fase 4, pide tu clave en <https://www.omdbapi.com/apikey.aspx> y registra tu cliente en AniDB (necesitas una cuenta).
+- Antes de la fase 4, pide tu clave gratuita de OMDb en <https://www.omdbapi.com/apikey.aspx>. AniList no pide cuenta ni clave.
 
 ---
 
@@ -422,15 +451,18 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 - [x] Analizadores de nombres (películas, series y anime) y lector de etiquetas de música, con pruebas.
 - [x] Escáner incremental en segundo plano y estado del escaneo.
 - [x] Angular: administración de bibliotecas, inicio, cuadrícula con búsqueda y filtros, y detalle con temporadas, episodios, álbumes y pistas.
+- [x] Bibliotecas de cualquier carpeta de tus discos, elegida solo desde la app y sin configuración previa: `setup.ps1` monta los discos de solo lectura en `/discos`, `MEDIA_PATH` es opcional y una carpeta que no está (disco desconectado) no impide arrancar ni borra nada al escanear.
+- [x] Carpetas dentro de cada serie (`Lat`, `Sub`) como en Jellyfin, nombres que son solo el número (`01.mp4`), especiales y miniaturas `NN-thumb.jpg`. Un escaneo nuevo reacomoda lo ya escaneado sin cambiar ids.
 
 **Entregable:** al escanear, aparecen los títulos con los datos del nombre del archivo y de las etiquetas.
 
 ### Fase 2b. Worker y escaneo automático
-- [ ] Proyecto `Mediateca.Worker` y cuarto contenedor `worker`: `Dockerfile` con los targets `api` y `worker`, Compose y healthcheck. Los escaneos salen de la API.
-- [ ] La cola de escaneos es la tabla `ScanJobs`: reclamo con actualización condicional e índice único parcial (un escaneo activo por biblioteca). Requiere generar la migración `WorkerYHorarioDeEscaneo`.
+- [x] Proyecto `Mediateca.Worker` y cuarto contenedor `worker`: `Dockerfile` con los targets `api` y `worker`, Compose y healthcheck. Los escaneos salen de la API.
+- [x] La cola de escaneos es la tabla `ScanJobs`: reclamo con actualización condicional e índice único parcial (un escaneo activo por biblioteca). Requiere generar la migración `WorkerYHorarioDeEscaneo`.
 - [ ] Escaneo automático con Quartz y horario editable (`ScanSchedule`, `GET` y `PUT /api/admin/scan-schedule`), aplicado por el worker en menos de un minuto; `SCAN_CRON` y `TZ` en `.env`.
 - [ ] Angular: sección "Escaneo automático", botón "Escanear todas" y aviso cuando un escaneo se queda en la cola.
 - [ ] Pruebas: reglas del horario (unitarias), endpoints del horario, escanear todas y solicitudes simultáneas (integración), y los componentes nuevos (Vitest).
+- [ ] Ícono en la bandeja de Windows (`Mediateca.Tray` + `bandeja.ps1`), como el de Jellyfin: iniciar con Windows, iniciar, detener, abrir y ver registros. Es una app de WinForms fuera de Docker que controla Compose.
 
 **Entregable:** el worker escanea solo con el horario elegido en la administración, y un escaneo pedido desde la API lo corre el worker.
 
@@ -444,13 +476,15 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 
 ### Fase 4. Metadatos
 - [ ] Proveedor de OMDb: búsqueda, detalle y episodios.
-- [ ] Proveedor de AniDB: volcado de títulos, detalle del anime y límite de 1 solicitud cada 2 s.
-- [ ] Caché, cola de metadatos y manejo del límite diario de OMDb.
-- [ ] Pósters en caché local.
+- [ ] Proveedor de AniList (GraphQL): búsqueda por título y detalle, con un límite compartido de 1 solicitud cada 2 s y una pausa ante un 429 según `Retry-After`.
+- [ ] `AniListId` en lugar de `AniDbId` (migración) y la etiqueta `[anilistid-…]` en lugar de `[anidbid-…]`. Quitar las variables de AniDB de `.env.example`, Compose, `appsettings.json` y el README.
+- [ ] Caché, cola de metadatos en el worker y manejo del límite diario de OMDb.
+- [ ] Ficha como la de Jellyfin: fondo, título original, años de emisión, resumen, géneros, etiquetas, estudios, calificación, enlaces externos y, si sigue en emisión, el día y la hora.
+- [ ] Pósters y fondos en caché local, con prioridad para las imágenes que ya están junto a los videos.
 - [ ] Diálogos de Identificar y Actualizar metadatos.
 - [ ] Pruebas con respuestas de ejemplo.
 
-**Entregable:** películas, series y anime muestran título, año, clasificación, resumen y póster.
+**Entregable:** películas, series y anime muestran título, año, clasificación, resumen y póster; el anime, además, estudios, etiquetas, fondo y emisión.
 
 ### Fase 5. Reproducción
 - [ ] Endpoint de stream con `Range` y tipos MIME.
@@ -470,8 +504,8 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 ## 16. Criterios de aceptación del MVP
 
 1. Con un PostgreSQL vacío, la primera ejecución crea la base y las tablas, y la app pide crear al administrador. Después de crearlo, el asistente ya no aparece.
-2. El administrador crea bibliotecas de música, películas, series y anime. Tras escanearlas, películas, series y anime muestran título, año, clasificación, resumen y póster de OMDb o AniDB; los álbumes muestran artista, año, carátula y pistas desde las etiquetas.
-3. "Identificar" corrige una coincidencia equivocada buscando o pegando un ID de IMDb o de AniDB.
+2. El administrador crea bibliotecas de música, películas, series y anime. Tras escanearlas, películas, series y anime muestran título, año, clasificación, resumen y póster de OMDb o AniList; los álbumes muestran artista, año, carátula y pistas desde las etiquetas.
+3. "Identificar" corrige una coincidencia equivocada buscando o pegando un ID de IMDb o de AniList.
 4. Un usuario con acceso solo a "Películas" ve únicamente esa biblioteca. Si pide un elemento, imagen o stream de otra, recibe 404.
 5. El video se puede adelantar (respuesta 206), "Continuar viendo" retoma la posición y un álbum se reproduce en orden con la barra fija.
 6. Las pruebas de backend y frontend pasan en GitHub Actions.
@@ -482,10 +516,10 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 
 | Riesgo | Cómo se mitiga |
 |---|---|
-| AniDB banea por exceso de solicitudes | Limitador de 1 cada 2 s, caché, volcado de títulos máximo una vez al día y sin reintentos ante un baneo |
+| AniList limita las solicitudes (hoy, 30 por minuto) y bloquea 1 minuto a quien se pasa | Limitador de 1 cada 2 s, caché y pausa de la cola según `Retry-After` |
 | Límite de 1,000 solicitudes diarias de OMDb | Caché por ID de IMDb y pausa de la cola al llegar al límite |
 | Códecs que el navegador no soporta (MKV) | Reproducción directa solo de formatos compatibles, aviso y descarga; FFmpeg como extensión |
-| Coincidencias equivocadas por títulos parecidos | Año en el nombre de la carpeta, etiquetas `[imdbid-…]` y `[anidbid-…]`, y el diálogo Identificar |
+| Coincidencias equivocadas por títulos parecidos | Año en el nombre de la carpeta, etiquetas `[imdbid-…]` y `[anilistid-…]`, y el diálogo Identificar |
 | Bibliotecas grandes | Escaneo incremental, guardado en lotes, paginación e índice trigram |
 
 ---
@@ -497,6 +531,7 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 - Npgsql EF Core 11: <https://www.npgsql.org/efcore/release-notes/11.0.html>
 - Nuevo calendario de versiones de Angular: <https://angular.love/angular-new-release-cycle-release-schedule-change-explained>
 - OMDb API: <https://www.omdbapi.com/>
-- AniDB, definición de la API HTTP: <https://wiki.anidb.net/HTTP_API_Definition>
+- AniList, límite de solicitudes: <https://docs.anilist.co/guide/rate-limiting>
+- AniList, términos de uso: <https://anilist.gitbook.io/anilist-apiv2-docs/docs/guide/terms-of-use>
 - IMDb, conjuntos de datos no comerciales: <https://developer.imdb.com/non-commercial-datasets/>
 - IMDb, acceso a su API (AWS Data Exchange): <https://developer.imdb.com/documentation/api-documentation/getting-access/>

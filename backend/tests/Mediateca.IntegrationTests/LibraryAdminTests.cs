@@ -87,6 +87,52 @@ public sealed class LibraryAdminTests(MediatecaApiFactory factory) : IClassFixtu
     }
 
     [Fact]
+    public async Task Las_bibliotecas_incluyen_las_rutas_para_mostrar_con_los_discos_como_en_Windows()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var name = Guid.NewGuid().ToString("N");
+        var disco = Path.Combine(factory.DrivesPath, "F", "Peliculas", name);
+        Directory.CreateDirectory(disco);
+        var normal = LibraryTestSupport.CreateFolder(factory, "Series");
+
+        var created = await LibraryTestSupport.CreateLibraryAsync(
+            admin, LibraryTestSupport.UniqueName("Con discos"), LibraryType.Movies, disco, normal);
+
+        // Las rutas guardadas son las del contenedor; las de mostrar, las de Windows (en el mismo orden).
+        Assert.Equal(new[] { disco, normal }, created.Paths.ToArray());
+        Assert.Equal(new[] { $"F:\\Peliculas\\{name}", normal }, created.DisplayPaths.ToArray());
+
+        var list = (await admin.GetJsonAsync<List<AdminLibraryResponse>>("/api/admin/libraries"))!;
+        Assert.Equal(created.DisplayPaths, list.Single(l => l.Id == created.Id).DisplayPaths);
+        Assert.Contains("\"displayPaths\"", await admin.GetStringAsync("/api/admin/libraries"));
+    }
+
+    [Fact]
+    public async Task El_selector_de_carpetas_lista_los_discos_y_sube_de_un_disco_a_la_lista_inicial()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var unidad = Path.Combine(factory.DrivesPath, "F");
+        var peliculas = Path.Combine(unidad, "Peliculas");
+        Directory.CreateDirectory(peliculas);
+
+        var roots = (await admin.GetJsonAsync<FolderListing>("/api/admin/folders"))!;
+        var disco = Assert.Single(roots.Folders, f => f.Name == "Disco F:");
+        Assert.Equal(unidad, disco.Path);
+        Assert.Equal("F:\\", disco.DisplayPath);
+        // La carpeta de los discos no aparece como una carpeta más.
+        Assert.DoesNotContain(roots.Folders, f => f.Path == factory.DrivesPath);
+
+        var dentro = (await admin.GetJsonAsync<FolderListing>($"/api/admin/folders?path={Uri.EscapeDataString(unidad)}"))!;
+        Assert.Null(dentro.Parent);
+        Assert.Equal("F:\\", dentro.DisplayPath);
+        var carpeta = Assert.Single(dentro.Folders, f => f.Name == "Peliculas");
+        Assert.Equal("F:\\Peliculas", carpeta.DisplayPath);
+
+        var masAdentro = (await admin.GetJsonAsync<FolderListing>($"/api/admin/folders?path={Uri.EscapeDataString(peliculas)}"))!;
+        Assert.Equal(unidad, masAdentro.Parent);
+    }
+
+    [Fact]
     public async Task Rechaza_una_carpeta_fuera_de_las_carpetas_de_medios()
     {
         using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);

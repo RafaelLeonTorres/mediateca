@@ -21,7 +21,7 @@ internal static class ItemMapping
     public static ItemSummary ToSummary(MediaItem item) =>
         new(item.Id, KindOf(item), item.Title, item.Year, ArtistOf(item), HasImage(item));
 
-    public static ChildItem ToChild(MediaItem item) =>
+    public static ChildItem ToChild(MediaItem item, int? childCount = null) =>
         new(
             item.Id,
             KindOf(item),
@@ -35,7 +35,8 @@ internal static class ItemMapping
             ArtistOf(item),
             TrackOf(item),
             DiscOf(item),
-            DurationOf(item));
+            DurationOf(item),
+            childCount);
 
     public static ItemDetail ToDetail(
         MediaItem item, string libraryName, LibraryType libraryType, IReadOnlyList<ItemReference> ancestors) =>
@@ -93,8 +94,9 @@ internal static class ItemMapping
     public static double? DurationOf(MediaItem item) => (item as PlayableItem)?.DurationSeconds;
 
     /// <summary>
-    /// Orden de los hijos: temporadas por número; episodios por temporada, episodio y número
-    /// absoluto; pistas por disco y pista. Las temporadas van antes que los episodios sueltos.
+    /// Orden de los hijos: temporadas por número y después las carpetas sin número ("Lat", "Sub") por
+    /// nombre; episodios por temporada, episodio y número absoluto; pistas por disco y pista. Las
+    /// temporadas van antes que los episodios sueltos.
     /// </summary>
     public static List<MediaItem> OrderChildren(IEnumerable<MediaItem> children) =>
         children

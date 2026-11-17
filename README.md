@@ -17,9 +17,11 @@ Cuatro contenedores con Docker Compose:
 
 El navegador solo habla con `web`, así que la app y la API comparten origen: la cookie de sesión y el streaming de audio y video funcionan sin CORS ni tokens en las URL.
 
-Los escaneos no corren dentro de la API: la API (o el escaneo automático) solo los **pone en la cola**, que es una tabla de la base de datos, y el `worker` los toma y los ejecuta. Los dos contenedores usan la misma carpeta de medios (`/media`, de solo lectura) y el mismo volumen de datos.
+Los escaneos no corren dentro de la API: la API (o el escaneo automático) solo los **pone en la cola**, que es una tabla de la base de datos, y el `worker` los toma y los ejecuta. Los dos contenedores ven los mismos discos (en `/discos`, de solo lectura) y el mismo volumen de datos.
 
 ## Levantar todo por primera vez
+
+**El primer arranque no necesita ninguna configuración de rutas.** `setup.ps1` monta tus discos, de solo lectura, dentro de los contenedores, y las carpetas de cada biblioteca se eligen después desde la app, en **Administrar › Bibliotecas**. La app arranca igual aunque todavía no haya bibliotecas.
 
 Solo necesitas [Docker Desktop](https://www.docker.com/products/docker-desktop/) (en Linux, Docker Engine con el plugin de Compose). .NET y Node.js se usan dentro de las imágenes, así que no hace falta instalarlos para correr la app.
 
@@ -38,7 +40,9 @@ El script:
 
 1. crea `.env` con una contraseña aleatoria para PostgreSQL, si todavía no existe;
 2. revisa que los tres puertos estén libres. Si alguno lo usa otro programa o Windows lo reservó (pasa con Hyper-V), usa el siguiente libre y lo guarda en `.env`;
-3. construye las imágenes, levanta los contenedores y espera a que estén sanos. Si algo falla, muestra el estado de los contenedores y el log de la API.
+3. monta tus discos fijos (`C:\`, `D:\`, `F:\`...) en solo lectura dentro de `api` y `worker`, como `/discos/C`, `/discos/D`... Para eso genera `docker-compose.override.yml`, que Compose une automáticamente con `docker-compose.yml` (ver [Tus discos](#tus-discos));
+4. si `MEDIA_PATH` apunta a una carpeta que no existe, lo regresa a `./media` para que Docker pueda arrancar;
+5. construye las imágenes, levanta los contenedores y espera a que estén sanos. Si algo falla, muestra el estado de los contenedores y el log de la API.
 
 La primera vez tarda varios minutos porque descarga las imágenes base, instala las dependencias y compila. Las siguientes veces Docker reutiliza lo que no cambió.
 
@@ -52,6 +56,8 @@ docker compose up -d --build --wait
 
 Abre <http://localhost:8080> y crea la cuenta de administrador.
 
+En macOS y Linux no hay script que monte los discos: hazlo con tu propio `docker-compose.override.yml` (ver [Tus discos](#tus-discos)). Mientras no lo hagas, la app funciona, pero el selector de carpetas estará vacío.
+
 ### Qué pasa en el primer arranque
 
 1. La API crea la base de datos `mediateca` y sus tablas con las migraciones de EF Core. Si ya existe, solo aplica las migraciones pendientes.
@@ -63,6 +69,9 @@ Abre <http://localhost:8080> y crea la cuenta de administrador.
 
 - **Un puerto está ocupado** ("Ports are not available" o "access permissions"). En Windows, `setup.ps1` lo resuelve solo. En macOS o Linux, detén lo que lo usa (por ejemplo, un `dotnet run` que haya quedado abierto) o cambia `WEB_PORT`, `API_PORT` o `DB_PORT` en `.env`.
 - **Un contenedor no arranca.** `docker compose ps -a` muestra el estado de cada uno y `docker compose logs api` (o `web`, o `db`) el error.
+- **El selector de carpetas está vacío o no aparece un disco.** En Windows, corre `setup.ps1` otra vez (monta los discos que hay en ese momento y vuelve a levantar los contenedores). En macOS y Linux, revisa que tu `docker-compose.override.yml` monte las carpetas en `/discos/<nombre>` y vuelve a correr `docker compose up -d`.
+- **Docker no inicia `api` o `worker` y dice que no existe la ruta de un montaje** (por ejemplo, `bind source path does not exist: F:\`). Desconectaste un disco que estaba montado. Conéctalo otra vez, o corre `setup.ps1`, que vuelve a generar el override solo con los discos que hay.
+- **Un escaneo termina con un aviso de "No se pudo leer…".** La carpeta de la biblioteca no estaba disponible (un disco desconectado, por ejemplo). El escaneo no borra nada de lo que ya estaba en el catálogo: conecta el disco, o corre `setup.ps1` si es nuevo, y vuelve a escanear.
 - **Un escaneo se queda en "En espera".** Los escaneos los corre el `worker`: si el contenedor no está corriendo, los escaneos se quedan en la cola y, pasados 30 segundos, la pantalla de bibliotecas lo avisa. Revisa `docker compose ps` y `docker compose logs worker`.
 - **Cambiaste `POSTGRES_PASSWORD` después del primer arranque.** La contraseña se fija cuando se crea el volumen de la base. Ejecuta `docker compose down -v` para empezar de cero; se borran los datos.
 
@@ -79,6 +88,27 @@ Abre <http://localhost:8080> y crea la cuenta de administrador.
 | Detener (los datos se quedan en los volúmenes) | `docker compose down` |
 | Empezar de cero (borra la base y los datos de la app) | `docker compose down -v` |
 
+## Ícono en la bandeja (Windows)
+
+Como Jellyfin, Mediateca puede tener un ícono junto al reloj para iniciarla, detenerla y abrirla sin usar la terminal. Un contenedor no puede dibujar ese ícono, así que es una app pequeña de Windows (`backend/src/Mediateca.Tray`) que controla los contenedores con Docker Compose.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\bandeja.ps1
+```
+
+Necesita el SDK de .NET 11. El script compila la app, la instala en `%LOCALAPPDATA%\Mediateca\Bandeja` y la abre. El ícono es cian cuando Mediateca está en ejecución y gris si no; clic derecho abre el menú:
+
+| Opción del menú | Qué hace |
+|---|---|
+| Iniciar con Windows | Abre el ícono al iniciar sesión; si Mediateca está detenida, la inicia (y abre Docker Desktop si hace falta) |
+| Iniciar Mediateca | `docker compose up -d` |
+| Detener Mediateca | `docker compose stop` |
+| Abrir Mediateca | Abre `http://localhost:WEB_PORT` (doble clic en el ícono hace lo mismo) |
+| Ver registros | Abre una consola con `docker compose logs -f` |
+| Salir | Quita el ícono; los contenedores siguen corriendo |
+
+Después de cambiar el código del ícono, vuelve a correr `bandeja.ps1`: cierra el que está abierto, lo reemplaza y lo abre otra vez.
+
 ## Configuración
 
 Todo se configura en `.env`; los valores por defecto están en `.env.example`.
@@ -87,7 +117,7 @@ Todo se configura en `.env`; los valores por defecto están en `.env.example`.
 |---|---|---|
 | `POSTGRES_PASSWORD` | Contraseña de PostgreSQL | la genera `setup.ps1` |
 | `WEB_PORT`, `API_PORT`, `DB_PORT` | Puertos en tu equipo | 8080, 5080 y 5433 |
-| `MEDIA_PATH` | Carpeta con tu música y tus videos; la API la ve como `/media`, de solo lectura | `./media` |
+| `MEDIA_PATH` | **Opcional.** Una carpeta extra (por ejemplo, un NAS); los contenedores la ven como `/media`, de solo lectura, y en el selector aparece como "Carpeta de medios". No hace falta para usar tus discos | `./media` |
 | `API_ENVIRONMENT` | Con `Development`, la API publica su documentación en <http://localhost:5080/scalar> | `Production` |
 | `SCAN_CRON` | Horario **inicial** del escaneo automático, en formato cron de Quartz (con segundos). Después se cambia desde Administrar › Bibliotecas | `0 0 3 * * ?` (todos los días a las 3:00) |
 | `TZ` | Zona horaria en la que se interpretan los horarios del escaneo automático | `America/Mexico_City` |
@@ -99,7 +129,7 @@ El formato de `SCAN_CRON` es el de Quartz: seis campos, `segundo minuto hora dí
 
 ## Tus bibliotecas
 
-1. **Apunta `MEDIA_PATH` a tu carpeta de medios** en `.env` (por ejemplo, `MEDIA_PATH=D:/Media`) y recrea los contenedores con `docker compose up -d`. La API la ve en `/media`, de solo lectura.
+1. **Ten tus discos montados.** En Windows ya lo hizo `setup.ps1`; en macOS y Linux, tu override (ver [Tus discos](#tus-discos)).
 2. **Ordena los archivos con estos nombres** (el detalle completo está en la sección 7 de [PLAN.md](PLAN.md)):
 
    | Tipo | Estructura | Ejemplo |
@@ -110,11 +140,71 @@ El formato de `SCAN_CRON` es el de Quartz: seis campos, `segundo minuto hora dí
    | Música | `Artista/Álbum/NN - Título` (las etiquetas del archivo mandan) | `Musica/Miles Davis/Kind of Blue/01 - So What.flac` |
 
    En el nombre de la carpeta puedes agregar `[imdbid-tt0113277]` o `[anidbid-23]`. Se ignoran las carpetas y los archivos que empiezan con punto.
-3. **Crea la biblioteca.** Entra como administrador, abre **Administrar** y elige **Nueva biblioteca**: nombre, tipo y una o más carpetas (con el selector, que solo muestra lo que hay dentro de `/media`).
+3. **Crea la biblioteca.** Entra como administrador, abre **Administrar › Bibliotecas** y elige **Nueva biblioteca**: nombre, tipo (películas, series, anime o música) y una o más carpetas, que eliges con el selector en cualquier disco ("Disco C:", "Disco F:"...). Cada biblioteca tiene sus propias carpetas, y se ven con su ruta de Windows (`F:\Peliculas`).
 4. **Escanéala.** Pulsa **Escanear** (o **Escanear todas**): el escaneo entra a la cola, el `worker` lo toma y el avance se actualiza cada 2 segundos. Los siguientes escaneos son incrementales: solo procesan lo nuevo, lo modificado y lo que desapareció.
 5. **Deja que se escaneen solas.** Más abajo, en **Escaneo automático**, activa **Revisar cambios automáticamente** y elige la frecuencia (cada hora, cada 6 o 12 horas, diario a las 3:00, semanal o un cron propio). Pulsa **Guardar horario**: el worker lo aplica en menos de un minuto, sin reiniciar nada. La pantalla muestra la zona horaria y las próximas 3 ejecuciones.
 
 Al terminar, el inicio muestra lo agregado recientemente y tus bibliotecas.
+
+### Tus discos
+
+Los contenedores `api` y `worker` ven tus discos en `/discos/<letra>`, de solo lectura: la app nunca modifica tus archivos. El selector de carpetas solo navega dentro de `/discos` y de `/media`, y solo lo usan los administradores.
+
+**Windows.** `setup.ps1` detecta tus discos fijos y genera `docker-compose.override.yml` (está en `.gitignore`) con un montaje por disco, en `api` y en `worker`:
+
+```yaml
+# Generado por setup.ps1: tus discos, de solo lectura, para elegir las carpetas de las bibliotecas
+# desde la app. Se vuelve a generar cada vez que corres setup.ps1 (después de conectar o quitar un disco).
+services:
+  api:
+    volumes:
+      - type: bind
+        source: 'C:\'
+        target: /discos/C
+        read_only: true
+  worker:
+    volumes:
+      - type: bind
+        source: 'C:\'
+        target: /discos/C
+        read_only: true
+```
+
+- **Disco nuevo:** después de conectarlo, corre `setup.ps1` otra vez para que aparezca en la app.
+- **Disco desconectado:** si quitas un disco que estaba montado, Docker no puede iniciar `api` ni `worker` hasta que lo conectes de nuevo o corras `setup.ps1`, que vuelve a generar el archivo solo con los discos que hay. Mientras tanto, las bibliotecas de ese disco no se borran: sus escaneos terminan con un aviso y no quitan nada del catálogo.
+- Si ya tienes un `docker-compose.override.yml` propio (sin la primera línea `# Generado por setup.ps1`), el script no lo toca y te explica cómo agregar los discos a mano.
+
+**macOS y Linux.** Escribe tu propio `docker-compose.override.yml` en la raíz del repositorio, con una carpeta por montaje bajo `/discos/<nombre>` (en `api` y en `worker`). Por ejemplo, tu carpeta personal y un disco externo:
+
+```yaml
+services:
+  api:
+    volumes:
+      - type: bind
+        source: /home/usuario
+        target: /discos/usuario
+        read_only: true
+      - type: bind
+        source: /mnt/discos/externo
+        target: /discos/externo
+        read_only: true
+  worker:
+    volumes:
+      - type: bind
+        source: /home/usuario
+        target: /discos/usuario
+        read_only: true
+      - type: bind
+        source: /mnt/discos/externo
+        target: /discos/externo
+        read_only: true
+```
+
+En el selector aparecen con el nombre de la carpeta (`usuario`, `externo`). Después corre `docker compose up -d`. Solo las carpetas con una letra como nombre (`/discos/C`) se muestran como "Disco C:" y con rutas de Windows.
+
+**`MEDIA_PATH` (opcional).** Si quieres una carpeta extra, como un NAS, ponla en `.env` (`MEDIA_PATH=//servidor/medios` o `MEDIA_PATH=D:/Media`): aparece en el selector como "Carpeta de medios". Si no la defines, Docker crea una carpeta `./media` vacía y no pasa nada.
+
+**Seguridad.** Los discos se montan de solo lectura. Solo los administradores pueden explorar las carpetas del servidor. Las imágenes y los streams solo salen de las carpetas de las bibliotecas o de las carpetas de medios, nunca de un archivo cualquiera.
 
 ## Desarrollo
 
@@ -140,7 +230,7 @@ dotnet user-secrets set ConnectionStrings:Default "Host=localhost;Port=$puerto;D
 dotnet watch --project backend/src/Mediateca.Api
 ```
 
-Con `dotnet watch` la API corre fuera de Docker y no ve `/media`: indica la carpeta de medios de tu equipo (la misma de `MEDIA_PATH`) con otro user-secret y usa esa ruta al crear las bibliotecas:
+Con `dotnet watch` la API corre fuera de Docker y no ve `/discos` ni `/media` (el selector queda vacío): indica la carpeta de medios de tu equipo con otro user-secret y usa esa ruta al crear las bibliotecas:
 
 ```powershell
 dotnet user-secrets set "Storage:MediaRoots:0" "D:/Media" --project backend/src/Mediateca.Api
@@ -148,7 +238,7 @@ dotnet user-secrets set "Storage:MediaRoots:0" "D:/Media" --project backend/src/
 
 La API queda en <http://localhost:5080> y su documentación en <http://localhost:5080/scalar>. Para volver a la API en Docker: `docker compose start api`.
 
-**Worker con recarga.** Los escaneos los corre el worker, así que con la API fuera de Docker también necesitas el worker fuera de Docker: el contenedor `worker` no ve las carpetas de tu equipo, solo `/media`. Detenlo y corre el proyecto en otra terminal:
+**Worker con recarga.** Los escaneos los corre el worker, así que con la API fuera de Docker también necesitas el worker fuera de Docker: el contenedor `worker` no ve las carpetas de tu equipo, solo `/discos` y `/media`. Detenlo y corre el proyecto en otra terminal:
 
 ```powershell
 docker compose stop worker
@@ -186,7 +276,9 @@ Las pruebas de integración levantan su propio PostgreSQL con Testcontainers, as
 
 ```text
 ├── docker-compose.yml          los cuatro contenedores
-├── setup.ps1                   primer arranque en Windows
+├── setup.ps1                   primer arranque en Windows (también monta tus discos)
+├── bandeja.ps1                 instala el ícono de la bandeja de Windows
+├── docker-compose.override.yml generado por setup.ps1 o escrito a mano; no se sube a git
 ├── .env.example                configuración (se copia a .env)
 ├── PLAN.md                     plan del proyecto
 ├── backend/
@@ -196,7 +288,8 @@ Las pruebas de integración levantan su propio PostgreSQL con Testcontainers, as
 │   │   ├── Mediateca.Api/             endpoints y configuración
 │   │   ├── Mediateca.Core/            entidades, reglas e interfaces
 │   │   ├── Mediateca.Infrastructure/  EF Core, escáner, cola de escaneos y proveedores de metadatos
-│   │   └── Mediateca.Worker/          escaneos de la cola y escaneo automático (Quartz)
+│   │   ├── Mediateca.Worker/          escaneos de la cola y escaneo automático (Quartz)
+│   │   └── Mediateca.Tray/            ícono de la bandeja de Windows (fuera de Docker)
 │   └── tests/
 │       ├── Mediateca.UnitTests/
 │       └── Mediateca.IntegrationTests/

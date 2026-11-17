@@ -25,7 +25,8 @@ const library = (lastScan: ScanJob | null): AdminLibrary => ({
   id: 'l1',
   name: 'Cine',
   type: 'Movies',
-  paths: ['/media/cine'],
+  paths: ['/discos/F/Cine'],
+  displayPaths: ['F:\\Cine'],
   createdAt: '2026-01-01T00:00:00Z',
   lastScannedAt: null,
   itemCount: 3,
@@ -88,6 +89,37 @@ describe('AdminLibraries', () => {
 
     expect(text()).toContain('Cine');
     expect(text()).toContain('Escaneo automático');
+  });
+
+  it('muestra las carpetas como en Windows y no con la ruta del contenedor', async () => {
+    const { load, text } = render();
+
+    await load([library(null)]);
+
+    expect(text()).toContain('F:\\Cine');
+    expect(text()).not.toContain('/discos/F/Cine');
+  });
+
+  it('si el último escaneo terminó pero no pudo leer una carpeta, muestra el aviso', async () => {
+    const { load, text } = render();
+    const unreadable: ScanJob = {
+      ...job('Completed', '2026-11-17T10:00:00Z'),
+      errors: 1,
+      errorMessage: 'No se pudo leer F:\\Cine. Revisa que el disco esté conectado.',
+    };
+
+    await load([library(unreadable)]);
+
+    expect(text()).toContain('1 con errores');
+    expect(text()).toContain('No se pudo leer F:\\Cine. Revisa que el disco esté conectado.');
+  });
+
+  it('un escaneo sin problemas no muestra ningún aviso', async () => {
+    const { element, load } = render();
+
+    await load([library(job('Completed', '2026-11-17T10:00:00Z'))]);
+
+    expect(element.querySelector('.warning')).toBeNull();
   });
 
   it('Escanear todas pide los escaneos, avisa cuántos entraron a la cola y sigue su avance', async () => {

@@ -90,6 +90,90 @@ public class EpisodeNameParserTests
         Assert.Null(resultado.AbsoluteNumber);
     }
 
+    [Theory]
+    // Nombres que son solo el número, como los que deja una descarga por episodio: "01.mp4".
+    [InlineData("Mi Anime/01.mp4", 1)]
+    [InlineData("Mi Anime/12v2.mkv", 12)]
+    [InlineData("Mi Anime/1080.mkv", 1080)]
+    public void En_anime_un_nombre_que_es_solo_el_numero_es_el_episodio(string ruta, int absoluto)
+    {
+        var resultado = EpisodeNameParser.ParseAnime(ruta);
+
+        Assert.Equal("Mi Anime", resultado.SeriesTitle);
+        Assert.Equal(absoluto, resultado.AbsoluteNumber);
+        Assert.Null(resultado.SeasonNumber);
+        Assert.Null(resultado.EpisodeTitle);
+        Assert.Null(resultado.Group);
+    }
+
+    [Fact]
+    public void Un_anio_suelto_no_es_un_episodio()
+    {
+        var resultado = EpisodeNameParser.ParseAnime("Mi Anime/2026.mp4");
+
+        Assert.Null(resultado.AbsoluteNumber);
+        Assert.Null(resultado.EpisodeNumber);
+    }
+
+    [Theory]
+    // Las carpetas dentro de la serie que no son de temporada (idioma, versión) se conservan tal cual.
+    [InlineData("Mi Anime/Lat/01.mp4", "Lat", 1)]
+    [InlineData("Mi Anime/sub/02.mp4", "sub", 2)]
+    [InlineData("Mi Anime/Otra Serie/Lat/03.mp4", "Otra Serie / Lat", 3)]
+    [InlineData("Mi Anime/Lat/[Grupo] Mi Anime - 04 [1080p].mkv", "Lat", 4)]
+    public void Las_carpetas_dentro_de_la_serie_forman_un_grupo(string ruta, string grupo, int absoluto)
+    {
+        var resultado = EpisodeNameParser.ParseAnime(ruta);
+
+        Assert.Equal("Mi Anime", resultado.SeriesTitle);
+        Assert.Equal(grupo, resultado.Group);
+        Assert.Equal(absoluto, resultado.AbsoluteNumber);
+        Assert.Null(resultado.SeasonNumber);
+    }
+
+    [Fact]
+    public void Una_carpeta_de_temporada_sola_no_es_un_grupo_pero_dentro_de_otra_carpeta_si()
+    {
+        var temporada = EpisodeNameParser.ParseSeries("Mi Serie (2019)/Temporada 01/Mi Serie S01E02.mkv");
+        var dentroDeLat = EpisodeNameParser.ParseAnime("Mi Anime/Lat/Temporada 2/03.mp4");
+
+        Assert.Null(temporada.Group);
+        Assert.Equal(1, temporada.SeasonNumber);
+        Assert.Equal("Lat / Temporada 2", dentroDeLat.Group);
+        Assert.Equal(2, dentroDeLat.SeasonNumber);
+        Assert.Equal(3, dentroDeLat.EpisodeNumber);
+    }
+
+    [Theory]
+    [InlineData("Mi Anime/Especial01.mp4", 1)]
+    [InlineData("Mi Anime/[Grupo] Mi Anime - SP02 [1080p].mkv", 2)]
+    [InlineData("Mi Anime/Mi Anime OVA 3.mkv", 3)]
+    [InlineData("Mi Anime/Lat/Special 4.mp4", 4)]
+    public void Los_especiales_van_a_la_temporada_cero(string ruta, int episodio)
+    {
+        var resultado = EpisodeNameParser.ParseAnime(ruta);
+
+        Assert.Equal("Mi Anime", resultado.SeriesTitle);
+        Assert.Equal(0, resultado.SeasonNumber);
+        Assert.Equal(episodio, resultado.EpisodeNumber);
+        Assert.Null(resultado.AbsoluteNumber);
+    }
+
+    [Theory]
+    // Una película dentro de la biblioteca de anime, con una versión por idioma: no hay número.
+    [InlineData("Mi Pelicula/Lat.mp4")]
+    [InlineData("Mi Pelicula/Mi Pelicula.mp4")]
+    [InlineData("Spy Family/Spy Family.mkv")]
+    public void Sin_numero_no_hay_episodio(string ruta)
+    {
+        var resultado = EpisodeNameParser.ParseAnime(ruta);
+
+        Assert.Null(resultado.SeasonNumber);
+        Assert.Null(resultado.EpisodeNumber);
+        Assert.Null(resultado.AbsoluteNumber);
+        Assert.Null(resultado.Group);
+    }
+
     [Fact]
     public void Lee_las_etiquetas_de_identificador_de_la_carpeta()
     {

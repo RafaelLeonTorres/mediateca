@@ -39,6 +39,9 @@ public sealed class LibraryScanner(
             .SelectMany(name => new[] { ".jpg", ".jpeg", ".png" }.Select(extension => name + extension))
             .ToArray();
 
+    // Miniatura de un episodio junto al video, como la guarda Jellyfin: "01-thumb.jpg" para "01.mp4".
+    private static readonly string[] ThumbnailSuffixes = ["-thumb.jpg", "-thumb.jpeg", "-thumb.png", "-thumb.webp"];
+
     /// <summary>
     /// Corre el escaneo de un <see cref="ScanJob"/> que el <see cref="ScanJobRunner"/> ya reclamó (estado
     /// Running y StartedAt puestos). Nunca lanza por un fallo del escaneo: lo deja en el <see cref="ScanJob"/>.
@@ -62,8 +65,16 @@ public sealed class LibraryScanner(
             }
             else
             {
-                await ScanAsync(new ScanContext(library, job), cancellationToken);
+                var context = new ScanContext(library, job);
+                await ScanAsync(context, cancellationToken);
                 job.Status = ScanStatus.Completed;
+
+                // Una carpeta que no se pudo leer no hace fallar el escaneo (no se borra nada de lo que había
+                // en ella), pero el administrador tiene que enterarse: casi siempre es un disco desconectado.
+                if (context.UnreadableRoots.Count > 0)
+                {
+                    job.ErrorMessage = UnreadableFoldersMessage(context.UnreadableRoots);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -80,6 +91,17 @@ public sealed class LibraryScanner(
 
         job.FinishedAt = DateTimeOffset.UtcNow;
         await SaveJobAsync(job, CancellationToken.None);
+    }
+
+    private string UnreadableFoldersMessage(IReadOnlyList<string> roots)
+    {
+        var displayPaths = roots
+            .Select(root => MediaPaths.ToDisplayPath(root, storage.Value.DrivesPath))
+            .ToList();
+        var subject = displayPaths.Count == 1
+            ? $"No se pudo leer {displayPaths[0]}."
+            : $"No se pudieron leer estas carpetas: {string.Join(", ", displayPaths)}.";
+        return subject + " Revisa que el disco esté conectado; si es un disco nuevo, vuelve a correr setup.ps1.";
     }
 
     private async Task ScanAsync(ScanContext context, CancellationToken cancellationToken)
@@ -145,7 +167,16 @@ public sealed class LibraryScanner(
             await FlushAsync(context, cancellationToken);
         }
 
-        // 3. Crear los nuevos, en lotes.
+        // 3. Reacomodar los episodios que no cambiaron pero que ahora se leen distinto (carpetas Lat y
+        //    Sub, nombres como "01.mp4", miniaturas). Conservan su id, y con él su progreso.
+        if (library.Type is LibraryType.Series or LibraryType.Anime)
+        {
+            var changedPaths = toUpdate.Select(file => file.FullPath).ToHashSet(MediaPaths.Comparer);
+            var unchanged = files.Where(file => existing.ContainsKey(file.FullPath) && !changedPaths.Contains(file.FullPath));
+            await RearrangeEpisodesAsync(context, unchanged, existing, cancellationToken);
+        }
+
+        // 4. Crear los nuevos, en lotes.
         foreach (var file in toAdd)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -168,7 +199,15 @@ public sealed class LibraryScanner(
 
         await FlushAsync(context, cancellationToken);
 
-        // 4. Quitar los padres que se quedaron sin hijos (después de crear, para no borrar uno que va a recibirlos).
+        // 5. Las temporadas de escaneos anteriores no tenían imagen: ahora llevan la de su carpeta o la de la serie.
+        foreach (var (seasonId, posterPath) in context.SeasonPosters)
+        {
+            await db.MediaItems
+                .Where(item => item.Id == seasonId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.PosterPath, posterPath), cancellationToken);
+        }
+
+        // 6. Quitar los padres que se quedaron sin hijos (después de crear, para no borrar uno que va a recibirlos).
         await DeleteEmptyParentsAsync(library.Id, cancellationToken);
 
         DateTimeOffset? scannedAt = DateTimeOffset.UtcNow;
@@ -325,12 +364,12 @@ public sealed class LibraryScanner(
         }
 
         var seasons = await db.MediaItems.AsNoTracking().OfType<Season>()
-            .Where(item => item.LibraryId == libraryId && item.ParentId != null && item.SeasonNumber != null)
-            .Select(item => new { item.Id, item.ParentId, item.SeasonNumber })
+            .Where(item => item.LibraryId == libraryId && item.ParentId != null)
+            .Select(item => new { item.Id, item.ParentId, item.Title, item.PosterPath })
             .ToListAsync(cancellationToken);
         foreach (var row in seasons)
         {
-            context.Seasons.TryAdd(SeasonKey(row.ParentId!.Value, row.SeasonNumber!.Value), row.Id);
+            context.Seasons.TryAdd(SeasonKey(row.ParentId!.Value, row.Title), new KnownSeason(row.Id, row.PosterPath));
         }
 
         var albums = await db.MediaItems.AsNoTracking().OfType<MusicAlbum>()
@@ -352,11 +391,8 @@ public sealed class LibraryScanner(
             case LibraryType.Movies:
                 AddMovie(context, file);
                 break;
-            case LibraryType.Series:
-                AddEpisode(context, file, EpisodeNameParser.ParseSeries(file.RelativePath));
-                break;
-            case LibraryType.Anime:
-                AddEpisode(context, file, EpisodeNameParser.ParseAnime(file.RelativePath));
+            case LibraryType.Series or LibraryType.Anime:
+                AddEpisode(context, file);
                 break;
             case LibraryType.Music:
                 AddTrack(context, file);
@@ -390,35 +426,70 @@ public sealed class LibraryScanner(
         db.MediaItems.Add(movie);
     }
 
-    private void AddEpisode(ScanContext context, ScannedFile file, ParsedEpisode parsed)
+    private void AddEpisode(ScanContext context, ScannedFile file)
     {
-        var seriesId = GetOrCreateSeries(context, file, parsed);
-        var parentId = parsed.SeasonNumber is { } seasonNumber
-            ? GetOrCreateSeason(context, seriesId, seasonNumber)
-            : seriesId;
-
-        var number = parsed.EpisodeNumber ?? parsed.AbsoluteNumber;
-        var title = parsed.EpisodeTitle
-            ?? (number is { } n ? $"Episodio {n}" : Path.GetFileNameWithoutExtension(file.FullPath));
-
+        var layout = DescribeEpisode(context, file);
         var episode = new Episode
         {
             Id = Guid.CreateVersion7(),
             LibraryId = context.Library.Id,
-            ParentId = parentId,
-            Title = Truncate(title, MaxTitleLength),
-            SortTitle = SortTitles.From(title),
+            ParentId = layout.ParentId,
+            Title = layout.Title,
+            SortTitle = SortTitles.From(layout.Title),
             FilePath = file.FullPath,
             FileSize = file.Size,
             FileModifiedAt = file.ModifiedAt,
             DurationSeconds = tagReader.ReadDuration(file.FullPath),
-            SeasonNumber = parsed.SeasonNumber,
-            EpisodeNumber = parsed.EpisodeNumber,
-            AbsoluteNumber = parsed.AbsoluteNumber,
+            SeasonNumber = layout.SeasonNumber,
+            EpisodeNumber = layout.EpisodeNumber,
+            AbsoluteNumber = layout.AbsoluteNumber,
+            PosterPath = layout.PosterPath,
             DateAdded = DateTimeOffset.UtcNow,
             MetadataStatus = MetadataStatus.Pending,
         };
         db.MediaItems.Add(episode);
+    }
+
+    /// <summary>
+    /// Dónde va un episodio y cómo se muestra, según su ruta: la serie, la temporada o la carpeta
+    /// ("Lat", "Sub") que lo contiene, sus números, su título y su miniatura. Crea los padres que falten.
+    /// </summary>
+    private EpisodeLayout DescribeEpisode(ScanContext context, ScannedFile file)
+    {
+        var parsed = context.Library.Type == LibraryType.Series
+            ? EpisodeNameParser.ParseSeries(file.RelativePath)
+            : EpisodeNameParser.ParseAnime(file.RelativePath);
+
+        var seriesId = GetOrCreateSeries(context, file, parsed);
+        Guid parentId;
+        if (parsed.Group is { } group)
+        {
+            parentId = GetOrCreateSeason(context, seriesId, group, parsed.SeasonNumber, file);
+        }
+        else if (parsed.SeasonNumber is { } seasonNumber)
+        {
+            parentId = GetOrCreateSeason(context, seriesId, SeasonTitle(seasonNumber), seasonNumber, file);
+        }
+        else
+        {
+            parentId = seriesId;
+        }
+
+        var number = parsed.EpisodeNumber ?? parsed.AbsoluteNumber;
+        var title = parsed.EpisodeTitle ?? number switch
+        {
+            { } n when parsed.SeasonNumber == 0 => $"Especial {n}",
+            { } n => $"Episodio {n}",
+            _ => Path.GetFileNameWithoutExtension(file.FullPath),
+        };
+
+        return new EpisodeLayout(
+            parentId,
+            parsed.SeasonNumber,
+            parsed.EpisodeNumber,
+            parsed.AbsoluteNumber,
+            Truncate(title, MaxTitleLength),
+            FindThumbnail(context, file));
     }
 
     private Guid GetOrCreateSeries(ScanContext context, ScannedFile file, ParsedEpisode parsed)
@@ -447,30 +518,41 @@ public sealed class LibraryScanner(
         return series.Id;
     }
 
-    private Guid GetOrCreateSeason(ScanContext context, Guid seriesId, int seasonNumber)
+    // Temporada o carpeta de una serie. Se busca por su título dentro de la serie: las de número se
+    // llaman "Temporada N" o "Especiales", y las demás, como su carpeta ("Lat", "Sub").
+    private Guid GetOrCreateSeason(ScanContext context, Guid seriesId, string title, int? seasonNumber, ScannedFile file)
     {
-        var key = SeasonKey(seriesId, seasonNumber);
-        if (context.Seasons.TryGetValue(key, out var existingId))
+        var key = SeasonKey(seriesId, title);
+        var posterPath = SeasonPoster(context, file);
+        if (context.Seasons.TryGetValue(key, out var known))
         {
-            return existingId;
+            if (known.PosterPath is null && posterPath is not null)
+            {
+                context.Seasons[key] = known with { PosterPath = posterPath };
+                context.SeasonPosters[known.Id] = posterPath;
+            }
+
+            return known.Id;
         }
 
-        var title = seasonNumber == 0 ? "Especiales" : $"Temporada {seasonNumber}";
         var season = new Season
         {
             Id = Guid.CreateVersion7(),
             LibraryId = context.Library.Id,
             ParentId = seriesId,
-            Title = title,
+            Title = Truncate(title, MaxTitleLength),
             SortTitle = SortTitles.From(title),
             SeasonNumber = seasonNumber,
+            PosterPath = posterPath,
             DateAdded = DateTimeOffset.UtcNow,
             MetadataStatus = MetadataStatus.Pending,
         };
         db.MediaItems.Add(season);
-        context.Seasons[key] = season.Id;
+        context.Seasons[key] = new KnownSeason(season.Id, posterPath);
         return season.Id;
     }
+
+    private static string SeasonTitle(int seasonNumber) => seasonNumber == 0 ? "Especiales" : $"Temporada {seasonNumber}";
 
     private void AddTrack(ScanContext context, ScannedFile file)
     {
@@ -580,7 +662,104 @@ public sealed class LibraryScanner(
         else
         {
             item.DurationSeconds = tagReader.ReadDuration(file.FullPath) ?? item.DurationSeconds;
+            if (item is Episode episode)
+            {
+                ApplyLayout(episode, DescribeEpisode(context, file));
+            }
         }
+    }
+
+    // Episodios que ya estaban y no cambiaron: se calcula su lugar con las reglas de hoy y solo se
+    // guardan los que quedaron distintos.
+    private async Task RearrangeEpisodesAsync(
+        ScanContext context,
+        IEnumerable<ScannedFile> unchanged,
+        Dictionary<string, ExistingFile> existing,
+        CancellationToken cancellationToken)
+    {
+        var stored = await db.MediaItems.AsNoTracking().OfType<Episode>()
+            .Where(item => item.LibraryId == context.Library.Id)
+            .Select(item => new StoredEpisode(
+                item.Id, item.ParentId, item.SeasonNumber, item.EpisodeNumber, item.AbsoluteNumber,
+                item.Title, item.PosterPath, item.MetadataStatus))
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        var moves = new List<(Guid Id, EpisodeLayout Layout)>();
+        foreach (var file in unchanged)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!stored.TryGetValue(existing[file.FullPath].Id, out var episode))
+            {
+                continue;
+            }
+
+            try
+            {
+                var layout = DescribeEpisode(context, file);
+                if (!IsInPlace(episode, layout))
+                {
+                    moves.Add((episode.Id, layout));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RecordError(context, file, ex);
+            }
+        }
+
+        foreach (var chunk in moves.Chunk(BatchSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var layouts = chunk.ToDictionary(move => move.Id, move => move.Layout);
+            var ids = layouts.Keys.ToList();
+            var episodes = await db.MediaItems.OfType<Episode>()
+                .Where(item => ids.Contains(item.Id))
+                .ToListAsync(cancellationToken);
+            foreach (var episode in episodes)
+            {
+                ApplyLayout(episode, layouts[episode.Id]);
+                context.Job.Updated++;
+            }
+
+            await FlushAsync(context, cancellationToken);
+        }
+
+        // Los padres nuevos (por ejemplo, las carpetas Lat y Sub) se guardan aunque no hubiera cambios.
+        await FlushAsync(context, cancellationToken);
+    }
+
+    // Con metadatos del proveedor (fase 4), el título ya no sale del nombre del archivo y la imagen
+    // del proveedor se conserva si junto al video no hay miniatura.
+    private static void ApplyLayout(Episode episode, EpisodeLayout layout)
+    {
+        episode.ParentId = layout.ParentId;
+        episode.SeasonNumber = layout.SeasonNumber;
+        episode.EpisodeNumber = layout.EpisodeNumber;
+        episode.AbsoluteNumber = layout.AbsoluteNumber;
+
+        var matched = episode.MetadataStatus == MetadataStatus.Matched;
+        if (!matched)
+        {
+            episode.Title = layout.Title;
+            episode.SortTitle = SortTitles.From(layout.Title);
+        }
+
+        if (layout.PosterPath is not null || !matched)
+        {
+            episode.PosterPath = layout.PosterPath;
+        }
+    }
+
+    // Lo mismo que ApplyLayout, como comparación: true si aplicarlo no cambiaría nada.
+    private static bool IsInPlace(StoredEpisode episode, EpisodeLayout layout)
+    {
+        var matched = episode.MetadataStatus == MetadataStatus.Matched;
+        return episode.ParentId == layout.ParentId
+            && episode.SeasonNumber == layout.SeasonNumber
+            && episode.EpisodeNumber == layout.EpisodeNumber
+            && episode.AbsoluteNumber == layout.AbsoluteNumber
+            && (matched || episode.Title == layout.Title)
+            && ((layout.PosterPath is null && matched) || episode.PosterPath == layout.PosterPath);
     }
 
     // ---------------------------------------------------------------- guardado
@@ -678,27 +857,73 @@ public sealed class LibraryScanner(
             return cached;
         }
 
+        var names = FolderFileNames(context, folder);
         string? found = null;
-        try
+        foreach (var candidate in PosterCandidates)
         {
-            var files = Directory.EnumerateFiles(folder).ToList();
-            foreach (var candidate in PosterCandidates)
+            if (names.TryGetValue(candidate, out var actual))
             {
-                found = files.FirstOrDefault(
-                    path => string.Equals(Path.GetFileName(path), candidate, StringComparison.OrdinalIgnoreCase));
-                if (found is not null)
-                {
-                    break;
-                }
+                found = Path.Combine(folder, actual);
+                break;
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            logger.LogDebug(ex, "No se pudo buscar el póster en {Path}.", folder);
         }
 
         context.Posters[folder] = found;
         return found;
+    }
+
+    // Imagen de una temporada o carpeta: la suya ("Lat/folder.jpg") o, si no tiene, la de la serie.
+    private string? SeasonPoster(ScanContext context, ScannedFile file) =>
+        IsInSubfolder(file)
+            ? FindPoster(context, Path.GetDirectoryName(file.FullPath)) ?? FindPoster(context, SeriesFolder(file))
+            : null;
+
+    private string? FindThumbnail(ScanContext context, ScannedFile file)
+    {
+        var folder = Path.GetDirectoryName(file.FullPath);
+        if (folder is null)
+        {
+            return null;
+        }
+
+        var names = FolderFileNames(context, folder);
+        var stem = Path.GetFileNameWithoutExtension(file.FullPath);
+        foreach (var suffix in ThumbnailSuffixes)
+        {
+            if (names.TryGetValue(stem + suffix, out var actual))
+            {
+                return Path.Combine(folder, actual);
+            }
+        }
+
+        return null;
+    }
+
+    // Nombres de los archivos de una carpeta, sin distinguir mayúsculas, con el nombre tal como está en
+    // el disco. Se lee una vez por carpeta en cada escaneo.
+    private Dictionary<string, string> FolderFileNames(ScanContext context, string folder)
+    {
+        if (context.FolderFiles.TryGetValue(folder, out var cached))
+        {
+            return cached;
+        }
+
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(folder))
+            {
+                var name = Path.GetFileName(path);
+                names.TryAdd(name, name);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogDebug(ex, "No se pudieron leer los archivos de {Path}.", folder);
+        }
+
+        context.FolderFiles[folder] = names;
+        return names;
     }
 
     // Guarda la carátula incrustada del archivo en la carpeta de datos: /media es de solo lectura.
@@ -729,7 +954,7 @@ public sealed class LibraryScanner(
 
     private static string SeriesKey(string title, int? year) => $"{title.ToLowerInvariant()}|{year}";
 
-    private static string SeasonKey(Guid seriesId, int number) => $"{seriesId:N}|{number}";
+    private static string SeasonKey(Guid seriesId, string title) => $"{seriesId:N}|{title.ToLowerInvariant()}";
 
     private static string AlbumKey(string? albumArtist, string album) =>
         $"{(albumArtist ?? "").ToLowerInvariant()}|{album.ToLowerInvariant()}";
@@ -743,6 +968,24 @@ public sealed class LibraryScanner(
     private sealed record ScannedFile(string FullPath, string RelativePath, long Size, DateTimeOffset ModifiedAt);
 
     private sealed record ExistingFile(Guid Id, string FilePath, long FileSize, DateTimeOffset FileModifiedAt);
+
+    /// <summary>Lugar y presentación de un episodio que salen de su ruta.</summary>
+    private sealed record EpisodeLayout(
+        Guid ParentId, int? SeasonNumber, int? EpisodeNumber, int? AbsoluteNumber, string Title, string? PosterPath);
+
+    /// <summary>Lo que hay guardado de un episodio, para compararlo con su <see cref="EpisodeLayout"/>.</summary>
+    private sealed record StoredEpisode(
+        Guid Id,
+        Guid? ParentId,
+        int? SeasonNumber,
+        int? EpisodeNumber,
+        int? AbsoluteNumber,
+        string Title,
+        string? PosterPath,
+        MetadataStatus MetadataStatus);
+
+    /// <summary>Temporada conocida en este escaneo: su id y su imagen.</summary>
+    private sealed record KnownSeason(Guid Id, string? PosterPath);
 
     private sealed record TrackInfo(
         string Title,
@@ -768,7 +1011,12 @@ public sealed class LibraryScanner(
 
         public Dictionary<string, Guid> Series { get; } = new();
 
-        public Dictionary<string, Guid> Seasons { get; } = new();
+        public Dictionary<string, KnownSeason> Seasons { get; } = new();
+
+        /// <summary>Temporadas que ya existían y ahora tienen imagen: se guardan al final.</summary>
+        public Dictionary<Guid, string> SeasonPosters { get; } = new();
+
+        public Dictionary<string, Dictionary<string, string>> FolderFiles { get; } = new(MediaPaths.Comparer);
 
         public Dictionary<string, Guid> Albums { get; } = new();
 

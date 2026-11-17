@@ -42,7 +42,8 @@ public sealed class SyncScanScheduleJob(
                 .ForJob(ScanScheduleKeys.ScheduledScanJob)
                 .WithCronSchedule(schedule.CronExpression.Trim())
                 .Build();
-            await context.Scheduler.ScheduleJob(trigger, cancellationToken);
+            // En Quartz 4 el segundo parámetro es ScheduleJobOptions: el token va por nombre.
+            await context.Scheduler.ScheduleJob(trigger, cancellationToken: cancellationToken);
 
             var zone = TimeZoneInfo.Local;
             var next = ScanScheduleRules.NextRuns(schedule.CronExpression, zone, DateTimeOffset.UtcNow, 1);

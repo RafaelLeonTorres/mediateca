@@ -2,7 +2,11 @@ using System.Net;
 using Mediateca.Api.Items;
 using Mediateca.Api.Libraries;
 using Mediateca.Core.Libraries;
+using Mediateca.Core.Media;
 using Mediateca.Core.Scanning;
+using Mediateca.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Mediateca.IntegrationTests;
 
@@ -177,6 +181,99 @@ public sealed class LibraryScanTests(MediatecaApiFactory factory) : IClassFixtur
     }
 
     [Fact]
+    public async Task Las_carpetas_dentro_de_una_serie_se_muestran_con_su_nombre_y_sus_episodios()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var folder = LibraryTestSupport.CreateFolder(
+            factory,
+            "Anime",
+            "Mi Anime/folder.jpg",
+            "Mi Anime/Lat/02.mp4",
+            "Mi Anime/Lat/01.mp4",
+            "Mi Anime/Lat/01-thumb.jpg",
+            "Mi Anime/Sub/01.mp4");
+        var library = await LibraryTestSupport.CreateLibraryAsync(admin, LibraryTestSupport.UniqueName("Anime"), LibraryType.Anime, folder);
+
+        var scan = await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Assert.Equal(3, scan.Added);
+        var series = Assert.Single((await GetItemsAsync(admin, library.Id))!.Items);
+        Assert.Equal("Mi Anime", series.Title);
+        Assert.True(series.HasImage);
+
+        // Las carpetas, como en el disco, después de las temporadas con número; llevan el póster de la
+        // serie y cuántos episodios tienen.
+        var groups = (await admin.GetJsonAsync<List<ChildItem>>($"/api/items/{series.Id}/children"))!;
+        Assert.Equal(new[] { "Lat", "Sub" }, groups.Select(g => g.Title).ToArray());
+        Assert.All(groups, g => Assert.Equal("Season", g.Kind));
+        Assert.All(groups, g => Assert.Null(g.SeasonNumber));
+        Assert.All(groups, g => Assert.True(g.HasImage));
+        Assert.Equal(new int?[] { 2, 1 }, groups.Select(g => g.ChildCount).ToArray());
+
+        var latino = (await admin.GetJsonAsync<List<ChildItem>>($"/api/items/{groups[0].Id}/children"))!;
+        Assert.Equal(new int?[] { 1, 2 }, latino.Select(e => e.AbsoluteNumber).ToArray());
+        Assert.Equal(new[] { "Episodio 1", "Episodio 2" }, latino.Select(e => e.Title).ToArray());
+        Assert.All(latino, e => Assert.Null(e.ChildCount));
+
+        // La miniatura que dejó Jellyfin junto al video ("01-thumb.jpg") es la imagen del episodio.
+        Assert.True(latino[0].HasImage);
+        Assert.False(latino[1].HasImage);
+        var image = await admin.GetAsync($"/api/items/{latino[0].Id}/image");
+        Assert.Equal(HttpStatusCode.OK, image.StatusCode);
+        Assert.Equal("image/jpeg", image.Content.Headers.ContentType?.MediaType);
+
+        var detail = (await admin.GetJsonAsync<ItemDetail>($"/api/items/{latino[0].Id}"))!;
+        Assert.Equal(new[] { "Series", "Season" }, detail.Ancestors.Select(a => a.Kind).ToArray());
+        Assert.Equal("Lat", detail.ParentTitle);
+    }
+
+    [Fact]
+    public async Task Un_escaneo_reacomoda_los_episodios_que_ya_estaban_sin_cambiarles_el_id()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var folder = LibraryTestSupport.CreateFolder(factory, "Anime", "Mi Anime/Lat/01.mp4");
+        var library = await LibraryTestSupport.CreateLibraryAsync(admin, LibraryTestSupport.UniqueName("Anime"), LibraryType.Anime, folder);
+        await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        // Así lo dejaba el escáner anterior: el episodio colgado de la serie, sin carpeta, sin número y
+        // con el nombre del archivo como título.
+        Guid episodeId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<MediatecaDbContext>();
+            var series = await db.MediaItems.OfType<Series>().SingleAsync(s => s.LibraryId == library.Id);
+            var episode = await db.MediaItems.OfType<Episode>().SingleAsync(e => e.LibraryId == library.Id);
+            episode.ParentId = series.Id;
+            episode.AbsoluteNumber = null;
+            episode.Title = "01";
+            episode.SortTitle = "01";
+            episode.PosterPath = null;
+            await db.SaveChangesAsync();
+            await db.MediaItems.OfType<Season>().Where(s => s.LibraryId == library.Id).ExecuteDeleteAsync();
+            episodeId = episode.Id;
+        }
+
+        var second = await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Assert.Equal(ScanStatus.Completed, second.Status);
+        Assert.Equal(0, second.Added);
+        Assert.Equal(1, second.Updated);
+        Assert.Equal(0, second.Removed);
+
+        var seriesId = Assert.Single((await GetItemsAsync(admin, library.Id))!.Items).Id;
+        var group = Assert.Single((await admin.GetJsonAsync<List<ChildItem>>($"/api/items/{seriesId}/children"))!);
+        Assert.Equal("Lat", group.Title);
+        var moved = Assert.Single((await admin.GetJsonAsync<List<ChildItem>>($"/api/items/{group.Id}/children"))!);
+        Assert.Equal(episodeId, moved.Id);
+        Assert.Equal(1, moved.AbsoluteNumber);
+        Assert.Equal("Episodio 1", moved.Title);
+
+        // Ya acomodado, otro escaneo no tiene nada que cambiar.
+        var third = await LibraryTestSupport.ScanAsync(admin, library.Id);
+        Assert.Equal(0, third.Updated);
+    }
+
+    [Fact]
     public async Task Escanea_musica_con_los_datos_de_la_ruta_cuando_el_archivo_no_tiene_etiquetas()
     {
         using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
@@ -277,6 +374,58 @@ public sealed class LibraryScanTests(MediatecaApiFactory factory) : IClassFixtur
         Assert.Equal(2, empty.Removed);
         Assert.Equal(0, (await GetItemsAsync(admin, library.Id))!.Total);
         Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync($"/api/items/{series.Id}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Si_la_carpeta_de_la_biblioteca_ya_no_esta_el_escaneo_termina_sin_borrar_nada_y_avisa()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var folder = LibraryTestSupport.CreateFolder(factory, "Peliculas", "Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4");
+        var library = await LibraryTestSupport.CreateLibraryAsync(admin, LibraryTestSupport.UniqueName("Desconectada"), LibraryType.Movies, folder);
+        var first = await LibraryTestSupport.ScanAsync(admin, library.Id);
+        Assert.Equal(1, first.Added);
+        Assert.Null(first.ErrorMessage);
+
+        // La carpeta desaparece (un disco desconectado): el escaneo termina, no borra nada y lo dice.
+        Directory.Delete(folder, recursive: true);
+        var second = await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Assert.Equal(ScanStatus.Completed, second.Status);
+        Assert.Equal(0, second.Removed);
+        Assert.Equal(1, second.Errors);
+        Assert.Contains(folder, second.ErrorMessage);
+        Assert.Contains("setup.ps1", second.ErrorMessage);
+        Assert.Equal(1, (await GetItemsAsync(admin, library.Id))!.Total);
+
+        // Cuando la carpeta vuelve, el escaneo sigue como si nada.
+        LibraryTestSupport.WriteFile(folder, "Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4", []);
+        var third = await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Assert.Equal(ScanStatus.Completed, third.Status);
+        Assert.Equal(0, third.Removed);
+        Assert.Equal(0, third.Errors);
+        Assert.Null(third.ErrorMessage);
+        Assert.Equal(1, (await GetItemsAsync(admin, library.Id))!.Total);
+    }
+
+    [Fact]
+    public async Task El_aviso_de_una_carpeta_que_no_se_pudo_leer_muestra_la_ruta_del_disco_como_en_Windows()
+    {
+        using var admin = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        var name = Guid.NewGuid().ToString("N");
+        var folder = Path.Combine(factory.DrivesPath, "F", name);
+        LibraryTestSupport.WriteFile(folder, "Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4", []);
+        var library = await LibraryTestSupport.CreateLibraryAsync(admin, LibraryTestSupport.UniqueName("Disco F"), LibraryType.Movies, folder);
+        await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Directory.Delete(folder, recursive: true);
+        var scan = await LibraryTestSupport.ScanAsync(admin, library.Id);
+
+        Assert.Equal(ScanStatus.Completed, scan.Status);
+        Assert.Equal(0, scan.Removed);
+        Assert.Contains($"F:\\{name}", scan.ErrorMessage);
+        Assert.DoesNotContain(factory.DrivesPath, scan.ErrorMessage);
+        Assert.Equal(1, (await GetItemsAsync(admin, library.Id))!.Total);
     }
 
     [Fact]

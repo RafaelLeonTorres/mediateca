@@ -31,8 +31,16 @@ public static class DependencyInjection
 
                 // Sin carpetas en la configuración, se usa el montaje de Docker.
                 var roots = options.MediaRoots.Where(root => !string.IsNullOrWhiteSpace(root)).ToArray();
+                var drivesPath = string.IsNullOrWhiteSpace(options.DrivesPath)
+                    ? StorageOptions.DefaultDrivesRoot
+                    : options.DrivesPath;
+                options.DrivesPath = MediaPaths.Normalize(Path.GetFullPath(drivesPath.Trim(), environment.ContentRootPath));
+
+                // Los discos montados cuentan como una carpeta de medios más: así el selector, el validador y
+                // las imágenes funcionan igual. Si la carpeta no existe, no pasa nada: nadie la ve.
                 options.MediaRoots = (roots.Length == 0 ? new[] { StorageOptions.DefaultMediaRoot } : roots)
                     .Select(root => MediaPaths.Normalize(Path.GetFullPath(root.Trim(), environment.ContentRootPath)))
+                    .Append(options.DrivesPath)
                     .Distinct(MediaPaths.Comparer)
                     .ToArray();
             });

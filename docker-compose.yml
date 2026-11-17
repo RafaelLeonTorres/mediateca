@@ -5,7 +5,10 @@
 #   worker  corre los escaneos de la cola y el escaneo automático (Quartz). Arranca cuando la API está sana.
 #   db      PostgreSQL 18.
 # Primera vez: setup.ps1 en Windows, o en macOS y Linux los pasos del README.
-# La configuración (contraseña, puertos y carpeta de medios) sale de .env; ver .env.example.
+# La configuración (contraseña y puertos) sale de .env; ver .env.example.
+# Tus discos no se configuran aquí: setup.ps1 los monta de solo lectura en /discos/<letra> (api y worker)
+# con un docker-compose.override.yml propio, que Compose une con este archivo. En Linux y macOS ese
+# archivo se escribe a mano; ver el README.
 name: mediateca
 
 services:
@@ -50,7 +53,8 @@ services:
       - "127.0.0.1:${API_PORT:-5080}:8080"
     volumes:
       - appdata:/data
-      # Tu música y tus videos, de solo lectura. Las bibliotecas apuntan a carpetas dentro de /media.
+      # Carpeta de medios opcional (MEDIA_PATH), de solo lectura, por ejemplo un NAS. Si no existe, Docker crea
+      # ./media. Los discos del equipo van en /discos (ver docker-compose.override.yml).
       - ${MEDIA_PATH:-./media}:/media:ro
     depends_on:
       db:
@@ -82,7 +86,7 @@ services:
       Scanning__DefaultCron: "${SCAN_CRON:-0 0 3 * * ?}"
     volumes:
       - appdata:/data
-      # La misma carpeta de medios que ve la API, de solo lectura.
+      # La misma carpeta de medios (y, por el override, los mismos discos) que ve la API, de solo lectura.
       - ${MEDIA_PATH:-./media}:/media:ro
     depends_on:
       # El worker no aplica migraciones: espera a que la API haya preparado la base de datos.

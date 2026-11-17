@@ -4,3 +4,5 @@
 tests
 **/*.user
 .vs
+# El ícono de la bandeja es una app de Windows que corre fuera de Docker.
+src/Mediateca.Tray

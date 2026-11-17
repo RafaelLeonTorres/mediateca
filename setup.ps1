@@ -7,8 +7,13 @@
   2. Si no existe .env, lo crea a partir de .env.example con una contraseña aleatoria para PostgreSQL.
   3. Revisa los puertos de .env (web, api y db). Si alguno lo usa otro programa o Windows lo
      reservó (pasa con Hyper-V), usa el siguiente libre y lo guarda en .env.
-  4. Construye las imágenes, levanta los cuatro contenedores y espera a que estén sanos.
-  5. Muestra la dirección de la app.
+  4. Monta tus discos fijos, de solo lectura, dentro de los contenedores api y worker (en
+     /discos/C, /discos/D...) para que las carpetas de las bibliotecas se elijan desde la app. Lo
+     hace con docker-compose.override.yml, que genera el script cada vez que corre: si conectas un
+     disco nuevo, vuelve a ejecutarlo. Si MEDIA_PATH de .env apunta a una carpeta que no existe,
+     lo regresa a ./media (MEDIA_PATH es opcional).
+  5. Construye las imágenes, levanta los cuatro contenedores y espera a que estén sanos.
+  6. Muestra la dirección de la app.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\setup.ps1
@@ -85,7 +90,7 @@ try {
             if ($_ -match '^POSTGRES_PASSWORD=') { "POSTGRES_PASSWORD=$clave" } else { $_ }
         }
         [IO.File]::WriteAllLines($archivoEnv, [string[]] $lineasEjemplo, $utf8)
-        Write-Host '    Listo. Ahí también puedes cambiar los puertos y la carpeta de medios.'
+        Write-Host '    Listo. Ahí también puedes cambiar los puertos.'
     }
 
     # 3. Puertos --------------------------------------------------------------------------------
@@ -125,8 +130,74 @@ try {
         Write-Host '    Ojo: npm start manda /api al puerto 5080; cámbialo en frontend/proxy.conf.json si lo usas.' -ForegroundColor Yellow
     }
 
-    # 4. Contenedores ---------------------------------------------------------------------------
-    Paso 'Construyendo las imágenes y levantando web, api y db (la primera vez tarda varios minutos)'
+    # 4. Discos ---------------------------------------------------------------------------------
+    Paso 'Montando tus discos, de solo lectura, para elegir las carpetas de las bibliotecas'
+
+    # MEDIA_PATH es opcional (por ejemplo, un NAS). Si apunta a una carpeta que no existe, Docker no
+    # arrancaría la API: se regresa a ./media, que Docker crea solo.
+    $rutaMedios = Leer-Variable $lineas 'MEDIA_PATH'
+    if ($rutaMedios) { $rutaMedios = $rutaMedios -replace '^["'']+|["'']+$', '' }
+    if ($rutaMedios -and ($rutaMedios -ne './media') -and -not (Test-Path -LiteralPath $rutaMedios -PathType Container)) {
+        Write-Host "    MEDIA_PATH apunta a '$rutaMedios' y esa carpeta no existe. La dejo en ./media; no la necesitas: las carpetas se eligen desde la app." -ForegroundColor Yellow
+        Escribir-Variable $lineas 'MEDIA_PATH' './media'
+        [IO.File]::WriteAllLines($archivoEnv, $lineas.ToArray(), $utf8)
+    }
+
+    # Discos fijos de este equipo cuya raíz (C:\) se puede abrir.
+    $letras = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceID -match '^[A-Za-z]:$' -and (Test-Path -LiteralPath ($_.DeviceID + '\')) } |
+        ForEach-Object { $_.DeviceID.Substring(0, 1).ToUpper() } |
+        Sort-Object)
+
+    $archivoOverride = Join-Path $raiz 'docker-compose.override.yml'
+    $marca = '# Generado por setup.ps1'
+    $esPropio = $false
+    if (Test-Path -LiteralPath $archivoOverride) {
+        $primeraLinea = [IO.File]::ReadAllLines($archivoOverride, $utf8) | Select-Object -First 1
+        $esPropio = -not ($primeraLinea -and $primeraLinea.StartsWith($marca))
+    }
+
+    if ($esPropio) {
+        Write-Host '    Ya existe un docker-compose.override.yml que no generó este script, así que no lo toco.' -ForegroundColor Yellow
+        Write-Host '    Para ver tus discos desde la app, agrega ahí un montaje de solo lectura por disco, en api y en worker:'
+        Write-Host '      services:'
+        Write-Host '        api:'
+        Write-Host '          volumes:'
+        Write-Host '            - type: bind'
+        Write-Host "              source: 'D:\'"
+        Write-Host '              target: /discos/D'
+        Write-Host '              read_only: true'
+        Write-Host '    (y lo mismo en worker). Si prefieres que el script lo genere, borra o renombra ese archivo y vuelve a correrlo.'
+    }
+    elseif ($letras.Count -eq 0) {
+        if (Test-Path -LiteralPath $archivoOverride) { Remove-Item -LiteralPath $archivoOverride }
+        Write-Host '    No encontré discos fijos que se puedan abrir. La app arranca igual, pero el selector de carpetas estará vacío;' -ForegroundColor Yellow
+        Write-Host '    puedes definir MEDIA_PATH en .env o agregar tus propios montajes (ver README).' -ForegroundColor Yellow
+    }
+    else {
+        $yaml = New-Object 'System.Collections.Generic.List[string]'
+        $yaml.Add("$marca`: tus discos, de solo lectura, para elegir las carpetas de las bibliotecas")
+        $yaml.Add('# desde la app. Se vuelve a generar cada vez que corres setup.ps1 (después de conectar o quitar un disco).')
+        $yaml.Add('services:')
+        foreach ($servicio in @('api', 'worker')) {
+            $yaml.Add("  ${servicio}:")
+            $yaml.Add('    volumes:')
+            foreach ($letra in $letras) {
+                $yaml.Add('      - type: bind')
+                $yaml.Add("        source: '${letra}:\'")
+                $yaml.Add("        target: /discos/$letra")
+                $yaml.Add('        read_only: true')
+            }
+        }
+        [IO.File]::WriteAllLines($archivoOverride, $yaml.ToArray(), $utf8)
+        $nombresDiscos = ($letras | ForEach-Object { "${_}:" }) -join ', '
+        Write-Host "    Discos montados, de solo lectura: $nombresDiscos"
+        Write-Host '    Si conectas un disco nuevo, vuelve a correr setup.ps1 para que aparezca en la app.'
+        Write-Host '    Si desconectas uno de estos discos, Docker no podrá iniciar api y worker hasta que lo vuelvas a conectar o corras setup.ps1 otra vez.'
+    }
+
+    # 5. Contenedores ---------------------------------------------------------------------------
+    Paso 'Construyendo las imágenes y levantando web, api, worker y db (la primera vez tarda varios minutos)'
     & docker compose up -d --build --wait
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
@@ -136,12 +207,13 @@ try {
         Detener 'Algún contenedor no arrancó. Arriba están su estado y las últimas líneas del log de la API.'
     }
 
-    # 5. Dirección de la app --------------------------------------------------------------------
+    # 6. Dirección de la app --------------------------------------------------------------------
     Write-Host "`nListo: abre http://localhost:$($puertos['WEB_PORT'])" -ForegroundColor Green
     Write-Host "  PostgreSQL: localhost:$($puertos['DB_PORT']), usuario mediateca y la contraseña de .env"
     Write-Host '  Estado:     docker compose ps'
     Write-Host '  Logs:       docker compose logs -f api'
     Write-Host '  Detener:    docker compose down'
+    Write-Host '  Ícono en la bandeja de Windows: .\bandeja.ps1 (necesita el SDK de .NET 11)'
 }
 finally {
     Pop-Location

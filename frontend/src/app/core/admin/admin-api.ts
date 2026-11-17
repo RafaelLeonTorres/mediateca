@@ -26,7 +26,10 @@ export interface AdminLibrary {
   id: string;
   name: string;
   type: LibraryType;
+  /** Rutas de las carpetas en el servidor (las del contenedor): son las que se mandan al guardar. */
   paths: string[];
+  /** Las mismas carpetas, en el mismo orden, como se muestran (F:\Peliculas en lugar de /discos/F/Peliculas). */
+  displayPaths: string[];
   createdAt: string;
   lastScannedAt: string | null;
   itemCount: number;
@@ -41,13 +44,20 @@ export interface LibraryInput {
 }
 
 export interface FolderEntry {
+  /** Nombre para mostrar: "Disco C:" para un disco, o el nombre de la carpeta. */
   name: string;
+  /** Ruta en el servidor: es la que se manda al guardar la biblioteca. */
   path: string;
+  /** Ruta para mostrar (F:\Peliculas). */
+  displayPath: string;
 }
 
 /** Contenido de una carpeta del servidor, para el selector de carpetas. */
 export interface FolderListing {
+  /** Ruta en el servidor de la carpeta abierta; null en la lista inicial de discos y carpetas de medios. */
   path: string | null;
+  /** Ruta para mostrar de la carpeta abierta. */
+  displayPath: string | null;
   parent: string | null;
   folders: FolderEntry[];
 }
@@ -126,7 +136,7 @@ export class AdminApi {
     return firstValueFrom(this.http.put<ScanSchedule>('/api/admin/scan-schedule', input));
   }
 
-  /** Subcarpetas de una carpeta del servidor. Sin ruta, las carpetas de medios configuradas. */
+  /** Subcarpetas de una carpeta del servidor. Sin ruta, los discos y las carpetas de medios. */
   folders(path?: string): Promise<FolderListing> {
     return firstValueFrom(
       this.http.get<FolderListing>('/api/admin/folders', {

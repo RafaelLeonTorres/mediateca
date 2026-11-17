@@ -38,6 +38,39 @@ public class MediaPathsTests
         Assert.True(MediaPaths.AreSame(Root, Root + Path.DirectorySeparatorChar));
     }
 
+    [Theory]
+    [InlineData("/discos/F/Peliculas/Accion", "F:\\Peliculas\\Accion")]
+    [InlineData("/discos/f/Peliculas", "F:\\Peliculas")]
+    [InlineData("/discos/F", "F:\\")]
+    [InlineData("/discos/F/", "F:\\")]
+    [InlineData("/discos/C/Users/Yo/Videos", "C:\\Users\\Yo\\Videos")]
+    public void Muestra_las_carpetas_de_los_discos_como_en_Windows(string path, string esperada)
+    {
+        Assert.Equal(esperada, MediaPaths.ToDisplayPath(path, "/discos"));
+    }
+
+    [Theory]
+    [InlineData("/discos/datos/Peliculas")]
+    [InlineData("/discos/datos")]
+    [InlineData("/discos")]
+    [InlineData("/discos2/F/Peliculas")]
+    [InlineData("/media/Peliculas")]
+    [InlineData("/discos/FG/Peliculas")]
+    [InlineData("/discos/1/Peliculas")]
+    public void Deja_igual_las_demas_rutas(string path)
+    {
+        Assert.Equal(path, MediaPaths.ToDisplayPath(path, "/discos"));
+    }
+
+    [Fact]
+    public void Muestra_los_discos_de_una_carpeta_de_discos_distinta()
+    {
+        var discos = Path.Combine(Path.GetTempPath(), "mediateca-discos");
+
+        Assert.Equal("D:\\Series", MediaPaths.ToDisplayPath(Path.Combine(discos, "D", "Series"), discos));
+        Assert.Equal("D:\\", MediaPaths.ToDisplayPath(Path.Combine(discos, "D"), discos));
+    }
+
     [Fact]
     public void Distingue_mayusculas_solo_donde_el_sistema_las_distingue()
     {

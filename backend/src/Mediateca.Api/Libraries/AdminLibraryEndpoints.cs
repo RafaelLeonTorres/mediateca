@@ -4,8 +4,10 @@ using Mediateca.Core.Scanning;
 using Mediateca.Infrastructure.Libraries;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Scanning;
+using Mediateca.Infrastructure.Storage;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Mediateca.Api.Libraries;
 
@@ -42,13 +44,13 @@ public static class AdminLibraryEndpoints
             .WithSummary("Avance de un escaneo.");
 
         group.MapGet("/folders", BrowseFolders)
-            .WithSummary("Selector de carpetas. Sin path lista las carpetas de medios; con path, sus subcarpetas.");
+            .WithSummary("Selector de carpetas. Sin path lista las carpetas de medios y los discos; con path, sus subcarpetas.");
 
         return app;
     }
 
     private static async Task<Ok<List<AdminLibraryResponse>>> ListAsync(
-        MediatecaDbContext db, CancellationToken cancellationToken)
+        MediatecaDbContext db, IOptions<StorageOptions> storage, CancellationToken cancellationToken)
     {
         var libraries = await db.Libraries.AsNoTracking().OrderBy(l => l.Name).ToListAsync(cancellationToken);
         var counts = await db.CountTopLevelAsync(cancellationToken);
@@ -57,7 +59,7 @@ public static class AdminLibraryEndpoints
         foreach (var library in libraries)
         {
             var lastScan = await LastScanAsync(db, library.Id, cancellationToken);
-            responses.Add(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan));
+            responses.Add(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath));
         }
 
         return TypedResults.Ok(responses);
@@ -67,6 +69,7 @@ public static class AdminLibraryEndpoints
         LibraryRequest request,
         MediatecaDbContext db,
         LibraryPathValidator pathValidator,
+        IOptions<StorageOptions> storage,
         CancellationToken cancellationToken)
     {
         var errors = new Dictionary<string, string[]>();
@@ -119,7 +122,7 @@ public static class AdminLibraryEndpoints
             throw;
         }
 
-        return TypedResults.Created($"/api/admin/libraries/{library.Id}", ToResponse(library, 0, null));
+        return TypedResults.Created($"/api/admin/libraries/{library.Id}", ToResponse(library, 0, null, storage.Value.DrivesPath));
     }
 
     private static async Task<Results<Ok<AdminLibraryResponse>, NotFound, ValidationProblem, ProblemHttpResult>> UpdateAsync(
@@ -127,6 +130,7 @@ public static class AdminLibraryEndpoints
         LibraryRequest request,
         MediatecaDbContext db,
         LibraryPathValidator pathValidator,
+        IOptions<StorageOptions> storage,
         CancellationToken cancellationToken)
     {
         var library = await db.Libraries.FirstOrDefaultAsync(l => l.Id == id, cancellationToken);
@@ -178,7 +182,7 @@ public static class AdminLibraryEndpoints
 
         var counts = await db.CountTopLevelAsync(cancellationToken);
         var lastScan = await LastScanAsync(db, library.Id, cancellationToken);
-        return TypedResults.Ok(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan));
+        return TypedResults.Ok(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath));
     }
 
     private static async Task<Results<NoContent, NotFound, ProblemHttpResult>> DeleteAsync(
@@ -270,12 +274,13 @@ public static class AdminLibraryEndpoints
             .OrderByDescending(j => j.CreatedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-    private static AdminLibraryResponse ToResponse(Library library, int itemCount, ScanJob? lastScan) =>
+    private static AdminLibraryResponse ToResponse(Library library, int itemCount, ScanJob? lastScan, string drivesPath) =>
         new(
             library.Id,
             library.Name,
             library.Type,
             library.Paths,
+            library.Paths.Select(path => MediaPaths.ToDisplayPath(path, drivesPath)).ToList(),
             library.CreatedAt,
             library.LastScannedAt,
             itemCount,

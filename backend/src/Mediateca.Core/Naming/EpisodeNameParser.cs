@@ -5,7 +5,9 @@ namespace Mediateca.Core.Naming;
 
 /// <summary>
 /// Datos de un episodio que salen de su ruta. Con <c>SxxEyy</c> hay temporada y episodio; con el
-/// número suelto del anime ("Serie - 05") y sin carpeta de temporada, solo el número absoluto.
+/// número suelto del anime ("Serie - 05", "01.mp4") y sin carpeta de temporada, solo el número absoluto.
+/// <c>Group</c> es la carpeta dentro de la serie que no es de temporada ("Lat", "Sub"), tal como se
+/// llama en el disco; si hay varias, van unidas con " / ".
 /// </summary>
 public sealed record ParsedEpisode(
     string SeriesTitle,
@@ -15,12 +17,14 @@ public sealed record ParsedEpisode(
     int? AbsoluteNumber,
     string? EpisodeTitle,
     string? ImdbId,
-    int? AniDbId);
+    int? AniDbId,
+    string? Group = null);
 
 /// <summary>
-/// Series (<c>Serie (Año)/Temporada NN/… SxxEyy</c>) y anime (<c>Serie/[Grupo] Serie - 05 [1080p]</c>).
-/// Recibe la ruta relativa a la carpeta de la biblioteca. La primera carpeta es la serie, salvo
-/// que sea una carpeta de temporada; si el archivo está suelto, el título sale del nombre.
+/// Series (<c>Serie (Año)/Temporada NN/… SxxEyy</c>) y anime (<c>Serie/[Grupo] Serie - 05 [1080p]</c>,
+/// <c>Serie/Lat/01.mp4</c>). Recibe la ruta relativa a la carpeta de la biblioteca. La primera carpeta
+/// es la serie, salvo que sea una carpeta de temporada; si el archivo está suelto, el título sale del
+/// nombre. Las demás carpetas dentro de la serie (por ejemplo, el idioma) forman un grupo.
 /// </summary>
 public static class EpisodeNameParser
 {
@@ -52,6 +56,14 @@ public static class EpisodeNameParser
     private static readonly Regex Leading = new(@"^([0-9]{1,3})(?:v[0-9]+)?(?=[\s.\-_]|$)", Options);
 
     private static readonly Regex Trailing = new(@"\s([0-9]{1,4})(?:v[0-9]+)?$", Options);
+
+    // El nombre es solo el número: "01.mp4", "05v2.mkv".
+    private static readonly Regex Bare = new(@"^([0-9]{1,4})(?:v[0-9]+)?$", Options);
+
+    // Especiales: "Especial01", "Special 2", "SP03", "OVA 1". Van a la temporada 0.
+    private static readonly Regex Special = new(
+        @"(?<![\p{L}\p{N}])(?:especial(?:es)?|specials?|sp|ova|oad)[\s._-]*([0-9]{1,3})(?:v[0-9]+)?(?![0-9])",
+        Options);
 
     // Paréntesis de calidad o códec "(1080p x265)", pero no el año "(2019)".
     private static readonly Regex QualityParens = new(@"\((?!\s*(?:19|20)[0-9]{2}\s*\))[^)]*\)", Options);
@@ -87,18 +99,32 @@ public static class EpisodeNameParser
 
         string? seriesFolder = null;
         int? folderSeason = null;
+        var innerFolders = new List<string>();
         for (var i = 0; i < segments.Length - 1; i++)
         {
             var season = ParseSeasonFolder(segments[i]);
+            if (i == 0 && season is null)
+            {
+                seriesFolder = segments[i];
+                continue;
+            }
+
             if (season is not null)
             {
                 folderSeason ??= season;
             }
-            else if (i == 0)
+
+            if (seriesFolder is not null)
             {
-                seriesFolder = segments[i];
+                innerFolders.Add(segments[i].Trim());
             }
         }
+
+        // Una sola carpeta de temporada es la temporada de siempre. Cualquier otra carpeta dentro de
+        // la serie ("Lat", "Sub", "Extras") se muestra como está, con sus episodios dentro.
+        var group = innerFolders.Count == 0 || (innerFolders.Count == 1 && folderSeason is not null)
+            ? null
+            : string.Join(" / ", innerFolders);
 
         var file = FolderTags.Extract(fileStem);
         var folder = seriesFolder is null ? null : FolderTags.Extract(seriesFolder);
@@ -138,7 +164,8 @@ public static class EpisodeNameParser
             hit?.Absolute,
             episodeTitle,
             folder?.ImdbId ?? file.ImdbId,
-            folder?.AniDbId ?? file.AniDbId);
+            folder?.AniDbId ?? file.AniDbId,
+            group);
     }
 
     /// <summary>Dónde está el número del episodio en el nombre y qué numeración es.</summary>
@@ -160,6 +187,14 @@ public static class EpisodeNameParser
             return new Hit(
                 cross.Index, cross.Index + cross.Length,
                 Number(cross.Groups[1]), Number(cross.Groups[2]), null, false);
+        }
+
+        var special = Special.Match(text);
+        if (special.Success)
+        {
+            return new Hit(
+                special.Index, special.Index + special.Length,
+                0, Number(special.Groups[1]), null, special.Index == 0);
         }
 
         if (anime || folderSeason is not null)
@@ -192,6 +227,14 @@ public static class EpisodeNameParser
             if (trailing.Success && IsPlausible(trailing.Groups[1]))
             {
                 return Numbered(trailing, folderSeason, leading: false);
+            }
+
+            // Un número al inicio seguido de texto puede ser parte del título ("86 Eighty Six"), pero
+            // un nombre que es solo el número es el episodio.
+            var bare = Bare.Match(text);
+            if (bare.Success && IsPlausible(bare.Groups[1]))
+            {
+                return Numbered(bare, folderSeason, leading: true);
             }
         }
 

@@ -125,13 +125,13 @@ describe('AdminApi', () => {
     const roots = api.folders();
     const first = http.expectOne('/api/admin/folders');
     expect(first.request.params.keys()).toEqual([]);
-    first.flush({ path: null, parent: null, folders: [] });
+    first.flush({ path: null, displayPath: null, parent: null, folders: [] });
     await roots;
 
     const inside = api.folders('/media/cine');
     const second = http.expectOne((r) => r.url === '/api/admin/folders');
     expect(second.request.params.get('path')).toBe('/media/cine');
-    second.flush({ path: '/media/cine', parent: '/media', folders: [] });
+    second.flush({ path: '/media/cine', displayPath: '/media/cine', parent: '/media', folders: [] });
     await inside;
   });
 

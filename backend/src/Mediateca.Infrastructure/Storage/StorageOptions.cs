@@ -11,6 +11,17 @@ public sealed class StorageOptions
     /// <summary>Carpeta de medios que se usa cuando la configuración no define ninguna (el montaje de Docker).</summary>
     public const string DefaultMediaRoot = "/media";
 
+    /// <summary>Carpeta de los discos cuando la configuración no define ninguna (el montaje de Docker).</summary>
+    public const string DefaultDrivesRoot = "/discos";
+
+    /// <summary>
+    /// Carpeta donde Docker monta los discos del equipo, de solo lectura: una subcarpeta por disco
+    /// (/discos/C, /discos/F...). setup.ps1 genera los montajes en Windows; en Linux y macOS se escriben
+    /// a mano (ver README). Es una carpeta de medios más, así que el selector, el validador y las
+    /// imágenes la tratan igual que /media. Si no existe, simplemente no aparece nada.
+    /// </summary>
+    public string DrivesPath { get; set; } = DefaultDrivesRoot;
+
     /// <summary>
     /// Carpeta de datos de la app: pósters, carátulas y volcado de títulos de AniDB. Si es relativa,
     /// se toma desde la carpeta de la API. En Docker es /data (el volumen appdata).

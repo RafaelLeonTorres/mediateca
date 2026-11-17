@@ -48,7 +48,10 @@ public sealed record ItemDetail(
     double? DurationSeconds,
     long? FileSize);
 
-/// <summary>Hijo de un elemento: temporada o episodio de una serie, episodio de una temporada, pista de un álbum.</summary>
+/// <summary>
+/// Hijo de un elemento: temporada o episodio de una serie, episodio de una temporada, pista de un álbum.
+/// <c>ChildCount</c> es cuántos episodios tiene una temporada o carpeta ("Lat", "Sub"); en lo demás, null.
+/// </summary>
 public sealed record ChildItem(
     Guid Id,
     string Kind,
@@ -62,4 +65,5 @@ public sealed record ChildItem(
     string? Artist,
     int? TrackNumber,
     int? DiscNumber,
-    double? DurationSeconds);
+    double? DurationSeconds,
+    int? ChildCount);

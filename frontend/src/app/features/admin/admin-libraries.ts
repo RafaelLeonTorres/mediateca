@@ -116,7 +116,7 @@ function describeQueued(queued: number): string {
             </div>
 
             <ul class="paths" [attr.aria-label]="'Carpetas de ' + library.name">
-              @for (path of library.paths; track path) {
+              @for (path of library.displayPaths; track path) {
                 <li>{{ path }}</li>
               }
             </ul>
@@ -150,6 +150,9 @@ function describeQueued(queued: number): string {
                   · {{ job.errors }} con errores
                 }
               </p>
+              @if (job?.errorMessage) {
+                <p class="warning" role="status">{{ job?.errorMessage }}</p>
+              }
             } @else {
               <p class="scan-result">Todavía no se ha escaneado.</p>
             }
@@ -184,6 +187,10 @@ function describeQueued(queued: number): string {
     .error,
     .warning {
       color: var(--mat-sys-error);
+    }
+
+    .warning {
+      margin: 8px 0 0;
     }
 
     .notice {

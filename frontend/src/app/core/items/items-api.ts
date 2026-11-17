@@ -59,7 +59,10 @@ export interface ItemDetail {
   fileSize: number | null;
 }
 
-/** Hijo de un elemento: temporada, episodio o pista. */
+/**
+ * Hijo de un elemento: temporada, episodio o pista. Las carpetas dentro de una serie ("Lat", "Sub")
+ * llegan como temporadas sin número; `childCount` es cuántos episodios tiene cada temporada.
+ */
 export interface ChildItem {
   id: string;
   kind: ItemKind;
@@ -74,6 +77,7 @@ export interface ChildItem {
   trackNumber: number | null;
   discNumber: number | null;
   durationSeconds: number | null;
+  childCount: number | null;
 }
 
 /** Dirección de la imagen de un elemento. Responde 404 si no tiene. */

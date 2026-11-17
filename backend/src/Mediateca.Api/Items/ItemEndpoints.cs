@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Mediateca.Api.Libraries;
+using Mediateca.Core.Media;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Storage;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -85,7 +86,22 @@ public static class ItemEndpoints
             .Where(i => i.ParentId == id)
             .ToListAsync(cancellationToken);
 
-        return TypedResults.Ok(ItemMapping.OrderChildren(children).Select(ItemMapping.ToChild).ToList());
+        // Cuántos episodios tiene cada temporada o carpeta, para mostrarlo en su tarjeta.
+        var seasonIds = children.OfType<Season>().Select(season => season.Id).ToList();
+        var counts = new Dictionary<Guid, int>();
+        if (seasonIds.Count > 0)
+        {
+            var rows = await visible
+                .Where(i => i.ParentId != null && seasonIds.Contains(i.ParentId.Value))
+                .GroupBy(i => i.ParentId)
+                .Select(g => new { ParentId = g.Key, Count = g.Count() })
+                .ToListAsync(cancellationToken);
+            counts = rows.ToDictionary(row => row.ParentId!.Value, row => row.Count);
+        }
+
+        return TypedResults.Ok(ItemMapping.OrderChildren(children)
+            .Select(child => ItemMapping.ToChild(child, child is Season ? counts.GetValueOrDefault(child.Id) : null))
+            .ToList());
     }
 
     private static async Task<Results<PhysicalFileHttpResult, NotFound>> ImageAsync(

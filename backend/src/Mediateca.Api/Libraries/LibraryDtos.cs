@@ -31,12 +31,17 @@ public sealed record ScanAllResponse(int Queued);
 /// <summary>Cuerpo de PUT /api/admin/scan-schedule: si el escaneo automático está activo y su cron de Quartz.</summary>
 public sealed record ScanScheduleRequest(bool? Enabled, string? CronExpression);
 
-/// <summary>Biblioteca para el administrador: con sus carpetas, la cantidad de elementos y el último escaneo.</summary>
+/// <summary>
+/// Biblioteca para el administrador: con sus carpetas, la cantidad de elementos y el último escaneo.
+/// <c>Paths</c> son las rutas del contenedor; <c>DisplayPaths</c> son las mismas, en el mismo orden, como
+/// se muestran al usuario (F:\Peliculas).
+/// </summary>
 public sealed record AdminLibraryResponse(
     Guid Id,
     string Name,
     LibraryType Type,
     IReadOnlyList<string> Paths,
+    IReadOnlyList<string> DisplayPaths,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastScannedAt,
     int ItemCount,
