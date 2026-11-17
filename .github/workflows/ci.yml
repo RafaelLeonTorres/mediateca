@@ -1,0 +1,64 @@
+# En cada pull request y en cada push a main: compila y prueba el backend y el frontend, y levanta
+# los tres contenedores para comprobar que la app responde a través de nginx.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (.NET 11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Restaurar
+        run: dotnet restore backend
+      - name: Compilar
+        run: dotnet build backend --no-restore
+      - name: Probar
+        run: dotnet test backend --no-build
+
+  frontend:
+    name: Frontend (Angular 22)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Probar
+        run: npx ng test --watch=false
+      - name: Compilar
+        run: npx ng build
+
+  docker:
+    name: Docker (web, api y db)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Crear .env
+        run: |
+          cp .env.example .env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+      - name: Construir y levantar
+        run: docker compose up -d --build --wait
+      - name: Probar la API a través de nginx
+        run: curl -fsS http://localhost:8080/api/health
+      - name: Ver los logs
+        if: failure()
+        run: docker compose logs
+      - name: Bajar
+        if: always()
+        run: docker compose down -v
