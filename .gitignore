@@ -1,0 +1,30 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+*.trx
+
+# Node y Angular
+node_modules/
+frontend/.angular/
+frontend/dist/
+coverage/
+
+# Datos locales: contraseñas, pósters en caché y medios. Las carpetas van ancladas con "/"
+# para no ignorar carpetas del código con el mismo nombre (git ignora mayúsculas en Windows).
+.env
+/data/
+/backend/src/Mediateca.Api/data/
+/media/
+*.db
+
+# Ajustes locales de Docker Compose (por ejemplo, más carpetas de medios)
+docker-compose.override.yml
+
+# Editores y sistema operativo
+.idea/
+Thumbs.db
+.DS_Store

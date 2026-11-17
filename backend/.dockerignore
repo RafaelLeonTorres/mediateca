@@ -1,0 +1,6 @@
+# La imagen solo necesita src/. Los bin y obj de Windows romperían el restore dentro del contenedor.
+**/bin
+**/obj
+tests
+**/*.user
+.vs
