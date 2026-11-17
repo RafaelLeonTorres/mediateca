@@ -1,5 +1,6 @@
 using Mediateca.Core.Libraries;
 using Mediateca.Core.Media;
+using Mediateca.Core.Users;
 
 namespace Mediateca.Api.Items;
 
@@ -21,7 +22,8 @@ internal static class ItemMapping
     public static ItemSummary ToSummary(MediaItem item) =>
         new(item.Id, KindOf(item), item.Title, item.Year, ArtistOf(item), HasImage(item));
 
-    public static ChildItem ToChild(MediaItem item, int? childCount = null) =>
+    public static ChildItem ToChild(
+        MediaItem item, int? childCount = null, UserItemData? data = null, int? unplayedCount = null) =>
         new(
             item.Id,
             KindOf(item),
@@ -36,10 +38,18 @@ internal static class ItemMapping
             TrackOf(item),
             DiscOf(item),
             DurationOf(item),
-            childCount);
+            childCount,
+            data?.PositionSeconds ?? 0,
+            data?.Played ?? false,
+            unplayedCount);
 
     public static ItemDetail ToDetail(
-        MediaItem item, string libraryName, LibraryType libraryType, IReadOnlyList<ItemReference> ancestors) =>
+        MediaItem item,
+        string libraryName,
+        LibraryType libraryType,
+        IReadOnlyList<ItemReference> ancestors,
+        UserItemData? data = null,
+        int? unplayedCount = null) =>
         new(
             item.Id,
             KindOf(item),
@@ -64,7 +74,10 @@ internal static class ItemMapping
             TrackOf(item),
             DiscOf(item),
             DurationOf(item),
-            (item as PlayableItem)?.FileSize);
+            (item as PlayableItem)?.FileSize,
+            data?.PositionSeconds ?? 0,
+            data?.Played ?? false,
+            unplayedCount);
 
     // El cliente nunca ve PosterPath, solo si hay imagen; la imagen sale de /api/items/{id}/image.
     public static bool HasImage(MediaItem item) => !string.IsNullOrEmpty(item.PosterPath);

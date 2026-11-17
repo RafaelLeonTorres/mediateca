@@ -16,6 +16,13 @@ export const routes: Routes = [
     loadComponent: () => import('./features/auth/login').then((m) => m.LoginPage),
   },
   {
+    // El reproductor de video ocupa toda la pantalla, sin la barra superior; pide sesión como el resto.
+    path: 'reproducir/:id',
+    title: 'Reproducir · Mediateca',
+    canActivate: [authGuard],
+    loadComponent: () => import('./features/player/player-page').then((m) => m.PlayerPage),
+  },
+  {
     // Todas las pantallas con sesión comparten la barra superior.
     path: '',
     canActivate: [authGuard],

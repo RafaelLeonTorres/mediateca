@@ -54,6 +54,7 @@ app.MapAdminLibraryEndpoints();
 app.MapAdminScanScheduleEndpoints();
 app.MapLibraryEndpoints();
 app.MapItemEndpoints();
+app.MapPlaybackEndpoints();
 
 await app.RunAsync();
 

@@ -303,8 +303,12 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 
 - `GET /api/items/{id}/stream`: valida el acceso y responde con `TypedResults.PhysicalFile(ruta, mime, enableRangeProcessing: true)`. Así acepta `Range` y responde 206, que es lo que permite adelantar y regresar. La ruta siempre sale de la base de datos y se verifica que esté dentro de la carpeta de la biblioteca.
 - Formatos del MVP: MP4 (H.264/AAC) y WebM para video; MP3, AAC/M4A, FLAC y Ogg/Opus para audio. Si el navegador no puede reproducir un archivo (por ejemplo, un MKV con códecs incompatibles), la app lo indica y ofrece descargarlo. Reempaquetar con FFmpeg queda como extensión.
-- **Progreso:** Angular guarda la posición cada 10 segundos y al pausar o salir (`PUT /api/items/{id}/progress`). Al pasar del 90 % el elemento se marca como visto. "Continuar viendo" lista lo que tiene posición guardada y no está visto.
-- **Música:** un `PlayerService` con signals (cola, pista actual y estado) alimenta una barra de reproducción fija que reproduce el álbum en orden.
+- **Progreso:** Angular guarda la posición cada 10 segundos, al pausar, al terminar y al salir (en la salida, con `fetch` y `keepalive`, leyendo el token XSRF de la cookie). El servidor hace el alta o la actualización (`PUT /api/items/{id}/progress`); si la posición pasa del 90 % de la duración, marca el elemento como visto y regresa la posición a 0. Sin duración conocida el servidor nunca lo marca como visto: el cliente avisa con `POST /api/items/{id}/played` cuando el video termina. Una posición menor al 90 % no quita la marca de visto. Valores negativos o no finitos responden 400.
+- **Visto / no visto:** `POST` y `DELETE /api/items/{id}/played` aplican a un episodio, una película o una pista, y en lote a una serie, temporada o álbum (todo lo que contienen). Marcar como visto fija `LastPlayedAt`; marcar como no visto borra el progreso. Las series y temporadas traen `unplayedCount`.
+- **Continuar viendo:** `GET /api/me/continue-watching` lista películas y episodios con posición guardada y sin ver, del más reciente al más antiguo. Cada tarjeta lleva directo a `/reproducir/:id`.
+- **A continuación (`GET /api/items/{id}/next-up`):** para una serie o temporada devuelve qué ver ahora. Si lo último que se reprodujo quedó a medias, ese mismo episodio; si se vio completo, el siguiente sin ver **de la misma carpeta**; si ya no hay más adelante, el primero sin ver de esa carpeta; si nunca se vio nada, el primero. Responde 204 cuando todo está visto. Los episodios con número pasan a la siguiente temporada numerada; las carpetas sin número (por ejemplo `Lat` y `Sub`) nunca se mezclan entre sí.
+- **Anterior y siguiente (`GET /api/items/{id}/playback`):** devuelve la URL del stream, el tipo MIME, la duración, la posición guardada, el título con su contexto y los ids anterior y siguiente dentro del mismo padre. Solo los episodios y pistas con número tienen anterior y siguiente; archivos como `Lat.mp4` y `Sub.mp4` son versiones de lo mismo, no una secuencia, y una película no tiene ninguno.
+- **Música:** un `PlayerService` con signals (cola, pista actual, posición y estado) alimenta una barra de reproducción fija dentro del layout, que reproduce el álbum en orden y pasa a la siguiente pista al terminar (que se marca como vista). Reproduce con un `<audio>` propio, así que sigue sonando al navegar. Al reproducir un video, la música se pausa.
 
 ---
 
@@ -325,9 +329,12 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 | `GET /api/libraries/{id}/filters` | usuario | Géneros y años que existen en la biblioteca, para los filtros |
 | `GET /api/libraries/{id}/items?search=&genre=&year=&sort=&page=` | usuario | Cuadrícula con búsqueda, filtros y paginación |
 | `GET /api/items/{id}` · `GET /api/items/{id}/children` · `GET /api/items/{id}/image` | usuario | Detalle, temporadas, episodios o pistas, y póster |
-| `GET /api/items/{id}/stream` | usuario | Reproducción con `Range` |
-| `PUT /api/items/{id}/progress` | usuario | Guardar posición y marcar como visto |
-| `GET /api/me/continue-watching` · `GET /api/me/recently-added` | usuario | Filas de la pantalla de inicio |
+| `GET /api/items/{id}/stream` | usuario | Reproducción con `Range` (206 y 416), tipo MIME por extensión y `Cache-Control: private`; 404 si no es reproducible, falta el archivo o está fuera de las raíces |
+| `GET /api/items/{id}/playback` | usuario | Datos para reproducir: URL del stream, MIME, duración, posición guardada, título, contexto y ids anterior y siguiente |
+| `PUT /api/items/{id}/progress` | usuario | Guardar posición (`{ positionSeconds }`); pasado el 90 % marca como visto. 400 si el valor no es válido |
+| `POST /api/items/{id}/played` · `DELETE /api/items/{id}/played` | usuario | Marcar como visto o no visto; en una serie, temporada o álbum, a todo su contenido |
+| `GET /api/items/{id}/next-up` | usuario | Qué ver a continuación en una serie o temporada (204 si no queda nada) |
+| `GET /api/me/continue-watching?limit=` · `GET /api/me/recently-added` | usuario | Filas de la pantalla de inicio. Continuar viendo devuelve `{ id, kind, title, seriesTitle, parentTitle, imageId, durationSeconds, positionSeconds, lastPlayedAt }` |
 | `GET /api/admin/items/{id}/metadata/search?query=` · `POST /api/admin/items/{id}/metadata/identify` · `POST /api/admin/items/{id}/metadata/refresh` | admin | Identificar y actualizar metadatos |
 
 La API se documenta con OpenAPI (`Microsoft.AspNetCore.OpenApi`) y se explora con Scalar en desarrollo.
@@ -344,14 +351,14 @@ Pantallas:
 | `/login` | Inicio de sesión |
 | `/` | Inicio: Continuar viendo, Agregado recientemente y Mis bibliotecas |
 | `/bibliotecas/:id` | Cuadrícula de pósters (o de álbumes, en música) con búsqueda, filtros por año y género, y orden |
-| `/items/:id` | Detalle con póster, título, año, clasificación, calificación, géneros y resumen; temporadas y episodios, o pistas del álbum; botones de reproducir y, para el admin, Identificar |
-| `/reproducir/:id` | Reproductor de video que pregunta si continuar donde te quedaste; botón de siguiente episodio |
+| `/items/:id` | Detalle con póster, título, año, clasificación, calificación, géneros y resumen; temporadas y episodios (con barra de avance y marca de visto), o pistas del álbum; botones Reproducir / Continuar desde, Reproducir álbum y Marcar como visto; tarjeta "A continuación" y, para el admin, Identificar |
+| `/reproducir/:id` | Reproductor de video a pantalla completa, fuera del layout (sin barra superior). Retoma donde te quedaste (con aviso y opción de empezar desde el inicio), guarda el avance, ofrece anterior y siguiente dentro de la misma carpeta, pasa solo al siguiente tras una cuenta regresiva de 5 s, y si el navegador no puede reproducir el archivo ofrece descargarlo. Atajos: flechas ±10 s y F (pantalla completa) |
 | `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, y la sección "Escaneo automático" con el horario |
 | `/admin/usuarios` | Usuarios, contraseña y casillas de bibliotecas permitidas |
 
 Estructura y prácticas:
 
-- `core/` (sesión, cliente de la API, guards), `features/` (setup, auth, home, library, item, player, admin) y `shared/` (tarjeta de póster, insignia de clasificación).
+- `core/` (sesión, cliente de la API, reproducción, guards), `features/` (setup, auth, home, library, item, player, admin) y `shared/` (tarjeta de póster, tarjeta de "continuar viendo", barra de música, insignia de clasificación).
 - Componentes standalone, signals, `@if`, `@for` y `@defer`, rutas con carga diferida y guards funcionales (`authGuard`, `adminGuard`, `setupGuard`).
 - `provideHttpClient(withXsrfConfiguration(...))` para que Angular mande el token XSRF solo.
 - Angular Material (Material 3) con diseño adaptable. Para los formularios de la administración, Signal Forms si ya son estables en tu versión 22.x; si no, formularios reactivos.
@@ -487,10 +494,11 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 **Entregable:** películas, series y anime muestran título, año, clasificación, resumen y póster; el anime, además, estudios, etiquetas, fondo y emisión.
 
 ### Fase 5. Reproducción
-- [ ] Endpoint de stream con `Range` y tipos MIME.
-- [ ] Progreso, visto/no visto, "Continuar viendo" y "Agregado recientemente".
-- [ ] Angular: reproductor de video y barra de música con cola.
-- [ ] Prueba: el stream responde 206.
+- [x] Endpoint de stream con `Range` y tipos MIME.
+- [x] Progreso, visto/no visto, "Continuar viendo" y "Agregado recientemente".
+- [x] Angular: reproductor de video.
+- [ ] Angular: barra de música con cola (con pruebas; falta probarla con una biblioteca de música real).
+- [x] Prueba: el stream responde 206.
 
 **Entregable:** ves un video, lo cierras y continúas donde te quedaste; escuchas un álbum completo.
 

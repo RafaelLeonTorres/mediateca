@@ -12,6 +12,7 @@ import {
   type LibraryType,
 } from '../../core/libraries/libraries-api';
 import { PosterCard } from '../../shared/poster-card/poster-card';
+import { ResumeCard } from '../../shared/resume-card/resume-card';
 
 /** Íconos de Material Symbols por tipo de biblioteca. */
 const LIBRARY_ICONS: Record<LibraryType, string> = {
@@ -21,10 +22,10 @@ const LIBRARY_ICONS: Record<LibraryType, string> = {
   Music: 'library_music',
 };
 
-/** Inicio: lo agregado recientemente y las bibliotecas del usuario. */
+/** Inicio: lo que el usuario dejó a medias, lo agregado recientemente y sus bibliotecas. */
 @Component({
   selector: 'app-home',
-  imports: [MatButton, MatIcon, MatProgressBar, PosterCard, RouterLink],
+  imports: [MatButton, MatIcon, MatProgressBar, PosterCard, ResumeCard, RouterLink],
   template: `
     <h1>Hola, {{ session.user()?.displayName }}</h1>
 
@@ -47,6 +48,19 @@ const LIBRARY_ICONS: Record<LibraryType, string> = {
         }
       </section>
     } @else {
+      @if (resumeList().length > 0) {
+        <section aria-labelledby="continue-title">
+          <h2 id="continue-title">Continuar viendo</h2>
+          <ul class="row wide">
+            @for (item of resumeList(); track item.id) {
+              <li>
+                <app-resume-card [item]="item" />
+              </li>
+            }
+          </ul>
+        </section>
+      }
+
       @if (recentList().length > 0) {
         <section aria-labelledby="recent-title">
           <h2 id="recent-title">Agregado recientemente</h2>
@@ -133,6 +147,11 @@ const LIBRARY_ICONS: Record<LibraryType, string> = {
       padding-bottom: 12px;
     }
 
+    /* Tarjetas 16:9 de "Continuar viendo". */
+    .row.wide {
+      grid-auto-columns: 260px;
+    }
+
     .libraries {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -180,10 +199,15 @@ const LIBRARY_ICONS: Record<LibraryType, string> = {
 export class Home {
   protected readonly session = inject(SessionStore);
   protected readonly libraries = inject(LibrariesApi).libraries();
-  protected readonly recent = inject(ItemsApi).recentlyAdded();
+  private readonly items = inject(ItemsApi);
+  protected readonly recent = this.items.recentlyAdded();
+  // Si "Continuar viendo" falla, el inicio sigue funcionando sin esa fila.
+  protected readonly resume = this.items.continueWatching();
 
-  protected readonly libraryList = computed(() => this.libraries.value() ?? []);
-  protected readonly recentList = computed(() => this.recent.value() ?? []);
+  // En Angular 22, value() de un recurso con error lanza: se lee solo cuando hay valor.
+  protected readonly libraryList = computed(() => (this.libraries.hasValue() ? (this.libraries.value() ?? []) : []));
+  protected readonly recentList = computed(() => (this.recent.hasValue() ? (this.recent.value() ?? []) : []));
+  protected readonly resumeList = computed(() => (this.resume.hasValue() ? (this.resume.value() ?? []) : []));
   /** Las bibliotecas ya llegaron (para no mostrar el estado vacío mientras se cargan). */
   protected readonly loaded = computed(() => this.libraries.status() === 'resolved');
 

@@ -57,4 +57,39 @@ describe('ItemsApi', () => {
 
     expect(resource.value()?.[0]?.title).toBe('Temporada 1');
   });
+
+  it('pide "Continuar viendo" con el límite', async () => {
+    const resource = TestBed.runInInjectionContext(() => api.continueWatching(5));
+    TestBed.tick();
+
+    const request = http.expectOne((r) => r.url === '/api/me/continue-watching');
+    expect(request.request.params.get('limit')).toBe('5');
+    request.flush([{ id: 'e1', title: 'Episodio 1' }]);
+    await TestBed.inject(ApplicationRef).whenStable();
+
+    expect(resource.value()?.[0]?.title).toBe('Episodio 1');
+  });
+
+  it('pide "A continuación" de una serie y deja null cuando no queda nada (204)', async () => {
+    const id = signal<string | undefined>('serie');
+    const resource = TestBed.runInInjectionContext(() => api.nextUp(() => id()));
+    TestBed.tick();
+
+    http.expectOne('/api/items/serie/next-up').flush({ id: 'e3', title: 'Episodio 3' });
+    await TestBed.inject(ApplicationRef).whenStable();
+    expect(resource.value()?.title).toBe('Episodio 3');
+
+    id.set('otra');
+    TestBed.tick();
+    http.expectOne('/api/items/otra/next-up').flush(null, { status: 204, statusText: 'No Content' });
+    await TestBed.inject(ApplicationRef).whenStable();
+    expect(resource.value()).toBeNull();
+  });
+
+  it('sin id no pide "A continuación"', () => {
+    TestBed.runInInjectionContext(() => api.nextUp(() => undefined));
+    TestBed.tick();
+
+    http.expectNone((r) => r.url.endsWith('/next-up'));
+  });
 });

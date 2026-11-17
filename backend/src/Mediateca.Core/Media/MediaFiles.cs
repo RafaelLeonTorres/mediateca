@@ -15,6 +15,25 @@ public static class MediaFiles
 
     public static bool IsAudio(string path) => AudioExtensions.Contains(Path.GetExtension(path));
 
+    /// <summary>
+    /// Tipo MIME con el que se sirve el archivo (PLAN.md, sección 9), según su extensión. Null si la
+    /// extensión no es una de las que reconoce el escáner.
+    /// </summary>
+    public static string? ContentTypeOf(string path) =>
+        Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".mp4" or ".m4v" => "video/mp4",
+            ".webm" => "video/webm",
+            ".mkv" => "video/x-matroska",
+            ".mp3" => "audio/mpeg",
+            ".m4a" => "audio/mp4",
+            ".aac" => "audio/aac",
+            ".flac" => "audio/flac",
+            ".ogg" or ".opus" => "audio/ogg",
+            ".wav" => "audio/wav",
+            _ => null,
+        };
+
     /// <summary>Indica si el archivo va en ese tipo de biblioteca: música admite audio y las demás, video.</summary>
     public static bool BelongsTo(LibraryType type, string path) =>
         type == LibraryType.Music ? IsAudio(path) : IsVideo(path);

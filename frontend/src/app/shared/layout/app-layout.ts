@@ -6,6 +6,8 @@ import { MatToolbar } from '@angular/material/toolbar';
 import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { SessionStore } from '../../core/auth/session-store';
+import { PlayerService } from '../../core/playback/player-service';
+import { MusicBar } from '../music-bar/music-bar';
 
 /** Estructura común de las pantallas con sesión: barra superior con navegación y menú de usuario. */
 @Component({
@@ -18,6 +20,7 @@ import { SessionStore } from '../../core/auth/session-store';
     MatMenuItem,
     MatMenuTrigger,
     MatToolbar,
+    MusicBar,
     RouterLink,
     RouterLinkActive,
     RouterOutlet,
@@ -64,9 +67,11 @@ import { SessionStore } from '../../core/auth/session-store';
       </mat-menu>
     </mat-toolbar>
 
-    <main class="content">
+    <main class="content" [class.with-bar]="player.current() !== null">
       <router-outlet />
     </main>
+
+    <app-music-bar />
   `,
   styles: `
     .bar {
@@ -116,6 +121,11 @@ import { SessionStore } from '../../core/auth/session-store';
       padding: 24px;
     }
 
+    /* Deja espacio para que la barra de música fija no tape el final de la página. */
+    .content.with-bar {
+      padding-bottom: 120px;
+    }
+
     @media (max-width: 480px) {
       .nav {
         margin-left: 8px;
@@ -129,6 +139,7 @@ import { SessionStore } from '../../core/auth/session-store';
 })
 export class AppLayout {
   protected readonly session = inject(SessionStore);
+  protected readonly player = inject(PlayerService);
   private readonly router = inject(Router);
 
   protected readonly loggingOut = signal(false);

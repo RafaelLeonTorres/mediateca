@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Mediateca.Api.Libraries;
 using Mediateca.Core.Media;
+using Mediateca.Core.Users;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Storage;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -42,7 +43,9 @@ public static class ItemEndpoints
     private static async Task<Results<Ok<ItemDetail>, NotFound>> GetAsync(
         Guid id, ClaimsPrincipal user, MediatecaDbContext db, CancellationToken cancellationToken)
     {
-        var item = await db.VisibleItems(user.GetId(), user.IsAdmin())
+        var userId = user.GetId();
+        var isAdmin = user.IsAdmin();
+        var item = await db.VisibleItems(userId, isAdmin)
             .AsNoTracking()
             .FirstOrDefaultAsync(i => i.Id == id, cancellationToken);
         if (item is null)
@@ -70,13 +73,31 @@ public static class ItemEndpoints
             parentId = parent.ParentId;
         }
 
-        return TypedResults.Ok(ItemMapping.ToDetail(item, library.Name, library.Type, ancestors));
+        // Lo del usuario: dónde se quedó en lo que se reproduce y cuántos episodios le faltan en una serie o temporada.
+        UserItemData? data = null;
+        if (item is PlayableItem)
+        {
+            data = await db.ItemProgress.AsNoTracking()
+                .FirstOrDefaultAsync(d => d.UserId == userId && d.ItemId == id, cancellationToken);
+        }
+
+        int? unplayed = null;
+        if (item is Series or Season)
+        {
+            unplayed = await db.VisibleItems(userId, isAdmin).OfType<Episode>()
+                .Where(e => (e.ParentId == id || e.Parent!.ParentId == id) &&
+                            !db.ItemProgress.Any(d => d.UserId == userId && d.ItemId == e.Id && d.Played))
+                .CountAsync(cancellationToken);
+        }
+
+        return TypedResults.Ok(ItemMapping.ToDetail(item, library.Name, library.Type, ancestors, data, unplayed));
     }
 
     private static async Task<Results<Ok<List<ChildItem>>, NotFound>> ChildrenAsync(
         Guid id, ClaimsPrincipal user, MediatecaDbContext db, CancellationToken cancellationToken)
     {
-        var visible = db.VisibleItems(user.GetId(), user.IsAdmin());
+        var userId = user.GetId();
+        var visible = db.VisibleItems(userId, user.IsAdmin());
         if (!await visible.AnyAsync(i => i.Id == id, cancellationToken))
         {
             return TypedResults.NotFound();
@@ -99,8 +120,36 @@ public static class ItemEndpoints
             counts = rows.ToDictionary(row => row.ParentId!.Value, row => row.Count);
         }
 
+        // Episodios que el usuario todavía no ha visto en cada temporada o carpeta: una sola consulta agrupada.
+        var unplayed = new Dictionary<Guid, int>();
+        if (seasonIds.Count > 0)
+        {
+            var rows = await visible.OfType<Episode>()
+                .Where(e => e.ParentId != null && seasonIds.Contains(e.ParentId.Value) &&
+                            !db.ItemProgress.Any(d => d.UserId == userId && d.ItemId == e.Id && d.Played))
+                .GroupBy(e => e.ParentId)
+                .Select(g => new { ParentId = g.Key, Count = g.Count() })
+                .ToListAsync(cancellationToken);
+            unplayed = rows.ToDictionary(row => row.ParentId!.Value, row => row.Count);
+        }
+
+        // Posición y "visto" del usuario en lo que se reproduce (episodios, pistas).
+        var playableIds = children.OfType<PlayableItem>().Select(child => child.Id).ToList();
+        var progress = new Dictionary<Guid, UserItemData>();
+        if (playableIds.Count > 0)
+        {
+            var rows = await db.ItemProgress.AsNoTracking()
+                .Where(d => d.UserId == userId && playableIds.Contains(d.ItemId))
+                .ToListAsync(cancellationToken);
+            progress = rows.ToDictionary(row => row.ItemId);
+        }
+
         return TypedResults.Ok(ItemMapping.OrderChildren(children)
-            .Select(child => ItemMapping.ToChild(child, child is Season ? counts.GetValueOrDefault(child.Id) : null))
+            .Select(child => ItemMapping.ToChild(
+                child,
+                child is Season ? counts.GetValueOrDefault(child.Id) : null,
+                progress.GetValueOrDefault(child.Id),
+                child is Season ? unplayed.GetValueOrDefault(child.Id) : null))
             .ToList());
     }
 

@@ -20,6 +20,20 @@ export const ITEM_KIND_LABELS: Record<ItemKind, string> = {
   Track: 'Pista',
 };
 
+/** Desde esta posición (en segundos) tiene sentido ofrecer "Continuar desde"; antes, se empieza de cero. */
+export const MIN_RESUME_SECONDS = 5;
+
+/** Porcentaje de avance (0 a 100) para una barra; null si no hay posición, duración o ya se vio. */
+export function progressPercent(
+  positionSeconds: number | null | undefined,
+  durationSeconds: number | null | undefined,
+): number | null {
+  if (!positionSeconds || positionSeconds <= 0 || !durationSeconds || durationSeconds <= 0) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, (positionSeconds / durationSeconds) * 100));
+}
+
 /** Duración legible: 3:05 o 1:02:07. Sin dato, cadena vacía. */
 export function formatDuration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 0) {

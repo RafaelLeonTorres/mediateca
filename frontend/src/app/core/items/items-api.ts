@@ -57,6 +57,12 @@ export interface ItemDetail {
   discNumber: number | null;
   durationSeconds: number | null;
   fileSize: number | null;
+  /** Dónde se quedó el usuario, en segundos (0 si no ha empezado o ya lo vio). */
+  positionSeconds: number;
+  /** El usuario ya lo vio. */
+  played: boolean;
+  /** Episodios que le faltan por ver en una serie o temporada; null en lo demás. */
+  unplayedCount: number | null;
 }
 
 /**
@@ -78,6 +84,29 @@ export interface ChildItem {
   discNumber: number | null;
   durationSeconds: number | null;
   childCount: number | null;
+  /** Dónde se quedó el usuario, en segundos (0 si no ha empezado o ya lo vio). */
+  positionSeconds: number;
+  /** El usuario ya lo vio. */
+  played: boolean;
+  /** Episodios que le faltan por ver en una temporada o carpeta; null en lo demás. */
+  unplayedCount: number | null;
+}
+
+/**
+ * Película o episodio de "Continuar viendo" y "A continuación", con el título de la serie y de su
+ * carpeta y lo necesario para la barra de avance. `imageId` es el elemento cuya imagen se muestra
+ * (el propio, o su temporada o serie si no tiene miniatura); null si ninguno tiene.
+ */
+export interface ResumeItem {
+  id: string;
+  kind: ItemKind;
+  title: string;
+  seriesTitle: string | null;
+  parentTitle: string | null;
+  imageId: string | null;
+  durationSeconds: number | null;
+  positionSeconds: number;
+  lastPlayedAt: string | null;
 }
 
 /** Dirección de la imagen de un elemento. Responde 404 si no tiene. */
@@ -94,6 +123,25 @@ export class ItemsApi {
       url: '/api/me/recently-added',
       params: { limit },
     }));
+  }
+
+  /** Películas y episodios a medias del usuario, del más reciente al más antiguo. */
+  continueWatching(limit = 20): HttpResourceRef<ResumeItem[] | undefined> {
+    return httpResource<ResumeItem[]>(() => ({
+      url: '/api/me/continue-watching',
+      params: { limit },
+    }));
+  }
+
+  /**
+   * "A continuación" de una serie o carpeta: el episodio que sigue dentro de la misma carpeta. La API
+   * responde 204 si no queda nada por ver, y el valor queda en null. Sin id no pide nada.
+   */
+  nextUp(id: () => string | undefined): HttpResourceRef<ResumeItem | null | undefined> {
+    return httpResource<ResumeItem | null>(() => {
+      const itemId = id();
+      return itemId ? `/api/items/${itemId}/next-up` : undefined;
+    });
   }
 
   /** Detalle de un elemento. Sin id no pide nada. */

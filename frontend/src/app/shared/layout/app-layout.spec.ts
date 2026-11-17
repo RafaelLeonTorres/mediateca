@@ -1,8 +1,11 @@
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
 import { SessionStore, type User } from '../../core/auth/session-store';
+import { PlayerService } from '../../core/playback/player-service';
 import { AppLayout } from './app-layout';
 
 /** Deja terminar las promesas pendientes (el clic espera el logout y luego navega). */
@@ -15,6 +18,9 @@ describe('AppLayout', () => {
       imports: [AppLayout],
       providers: [
         provideRouter([]),
+        // La barra de música usa el reproductor, y este el cliente HTTP.
+        provideHttpClient(),
+        provideHttpClientTesting(),
         { provide: SessionStore, useValue: { user: signal(user), logout } },
       ],
     });
@@ -58,5 +64,20 @@ describe('AppLayout', () => {
 
     expect(logout).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('/login');
+  });
+
+  it('la barra de música solo aparece cuando hay una cola', () => {
+    const { fixture, element } = render({ id: '2', userName: 'b', displayName: 'Ana', isAdmin: false });
+    expect(element.querySelector('app-music-bar section')).toBeNull();
+    expect(element.querySelector('main')!.classList).not.toContain('with-bar');
+
+    TestBed.inject(PlayerService).queue.set([
+      { id: 't1', title: 'So What', artist: 'Miles Davis', album: 'Kind of Blue', durationSeconds: 545, imageId: null },
+    ]);
+    TestBed.inject(PlayerService).index.set(0);
+    fixture.detectChanges();
+
+    expect(element.querySelector('app-music-bar section')).not.toBeNull();
+    expect(element.querySelector('main')!.classList).toContain('with-bar');
   });
 });
