@@ -1,8 +1,10 @@
+using Mediateca.Core.Subtitles;
 using Mediateca.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -32,6 +34,12 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
     /// <summary>Carpeta de discos de la prueba (<c>Storage:DrivesPath</c>): lo que en Docker es /discos, con una subcarpeta por disco.</summary>
     public string DrivesPath => _drivesPath;
 
+    /// <summary>
+    /// Doble de ffprobe y ffmpeg: las pruebas no dependen de que FFmpeg esté instalado. Por omisión responde que
+    /// no están instalados; cada prueba de subtítulos le pone su <see cref="FakeProcessRunner.Handler"/>.
+    /// </summary>
+    public FakeProcessRunner Processes { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // La base "mediateca" no existe en el contenedor: la app tiene que crearla al arrancar.
@@ -59,7 +67,12 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
 
         // En producción los escaneos los corre el worker, un proceso aparte. Las pruebas registran el
         // mismo procesador dentro de la API de prueba, así no necesitan un segundo proceso.
-        builder.ConfigureServices(services => services.AddScanProcessing());
+        builder.ConfigureServices(services =>
+        {
+            services.AddScanProcessing();
+            services.RemoveAll<IProcessRunner>();
+            services.AddSingleton<IProcessRunner>(Processes);
+        });
     }
 
     public Task InitializeAsync() => _postgres.StartAsync();

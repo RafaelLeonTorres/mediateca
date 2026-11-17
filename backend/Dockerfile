@@ -42,6 +42,16 @@ ENTRYPOINT ["dotnet", "Mediateca.Worker.dll"]
 
 # API (el último stage: es lo que construye un `docker build` sin --target). Escucha en el puerto 8080.
 FROM runtime AS api
+
+# FFmpeg (ffmpeg y ffprobe) solo en la API: lista y extrae los subtítulos incrustados en los videos (MP4 con
+# mov_text, MKV...). El worker no lo usa y se queda sin él. La etapa runtime termina con el usuario sin
+# privilegios, que no puede instalar paquetes: se vuelve a root solo para apt-get y se regresa de inmediato.
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+USER $APP_UID
+
 COPY --from=build /app/api .
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "Mediateca.Api.dll"]

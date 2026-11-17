@@ -204,7 +204,15 @@ En el selector aparecen con el nombre de la carpeta (`usuario`, `externo`). Desp
 
 **`MEDIA_PATH` (opcional).** Si quieres una carpeta extra, como un NAS, ponla en `.env` (`MEDIA_PATH=//servidor/medios` o `MEDIA_PATH=D:/Media`): aparece en el selector como "Carpeta de medios". Si no la defines, Docker crea una carpeta `./media` vacía y no pasa nada.
 
-**Seguridad.** Los discos se montan de solo lectura. Solo los administradores pueden explorar las carpetas del servidor. Las imágenes y los streams solo salen de las carpetas de las bibliotecas o de las carpetas de medios, nunca de un archivo cualquiera.
+**Seguridad.** Los discos se montan de solo lectura. Solo los administradores pueden explorar las carpetas del servidor. Las imágenes, los streams y los subtítulos solo salen de las carpetas de las bibliotecas o de las carpetas de medios, nunca de un archivo cualquiera.
+
+## Reproductor, reescalado y subtítulos
+
+El video se ve con un reproductor propio: controles que se ocultan solos a los 3 segundos, barra de avance que se arrastra, volumen, pantalla completa y atajos de teclado (espacio o K, flechas ±10 s, M, C y F).
+
+**Reescalar.** Es un botón de la barra de controles que mejora la imagen con tu tarjeta gráfica, en el navegador (WebGPU): elige la vista (Original, Mejorado o Comparar con un divisor que se arrastra), la resolución de salida (Pantalla, 720p, 1080p, 1440p o 4K), el escalado (Bilineal, Bicúbico, Lanczos 2 o Lanczos 3) y la nitidez, la reducción de ruido, el anti-ringing y el dithering. Por omisión el video se ve en Original, sin usar la GPU, y el navegador recuerda lo último que elegiste. **Requiere Chrome o Edge actualizados con WebGPU**; sin él, el botón aparece deshabilitado y el video se ve normal. Un reescalado no agrega detalle que el archivo no tenga: mejora la nitidez y el escalado, y con una GPU integrada o por software puede ir lento.
+
+**Subtítulos.** Si el video tiene subtítulos de texto, aparece el botón CC (o la tecla C). Se leen de las pistas incrustadas (MKV, MP4...) y de los archivos sueltos junto al video con el mismo nombre y la extensión `.srt`, `.vtt`, `.ass` o `.ssa`; por ejemplo `Capitulo 01.mkv` y `Capitulo 01.es.srt` o `Capitulo 01.en.forced.vtt`. Por omisión están desactivados; el idioma que elijas se activa solo en el siguiente episodio. No se ofrecen los subtítulos de imagen (PGS, VobSub). La imagen de Docker de la API trae `ffmpeg` y `ffprobe` para leer las pistas incrustadas; si corres la API sin ellos solo se pierden esas pistas (los archivos sueltos siguen funcionando) y se puede indicar su ruta con `Media:Ffmpeg` y `Media:Ffprobe`.
 
 ## Desarrollo
 

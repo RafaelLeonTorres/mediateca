@@ -1,14 +1,17 @@
 using Mediateca.Core.Scanning;
+using Mediateca.Core.Subtitles;
 using Mediateca.Infrastructure.Identity;
 using Mediateca.Infrastructure.Libraries;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Scanning;
 using Mediateca.Infrastructure.Storage;
+using Mediateca.Infrastructure.Subtitles;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace Mediateca.Infrastructure;
@@ -85,6 +88,20 @@ public static class DependencyInjection
     }
 
     /// <summary>
+    /// Subtítulos de los videos: la configuración de ffprobe y ffmpeg (<c>Media</c>), el ejecutor de procesos y el
+    /// servicio que lista y convierte las pistas. Solo lo usa la API. El ejecutor se registra con
+    /// <c>TryAdd</c>: las pruebas ponen su propio doble antes y no dependen de que FFmpeg esté instalado.
+    /// </summary>
+    public static IServiceCollection AddSubtitles(this IServiceCollection services)
+    {
+        services.AddOptions<MediaToolsOptions>().BindConfiguration(MediaToolsOptions.Section);
+        services.AddMemoryCache();
+        services.TryAddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<SubtitleService>();
+        return services;
+    }
+
+    /// <summary>
     /// Lo de la API: persistencia, Identity, las llaves de Data Protection y los servicios de
     /// bibliotecas. No registra el procesador de escaneos: eso es del worker (<see cref="AddScanProcessing"/>).
     /// En las siguientes fases se agregan aquí los proveedores de metadatos.
@@ -120,6 +137,7 @@ public static class DependencyInjection
         services.AddSingleton<LibraryPathValidator>();
         services.AddSingleton<FolderBrowser>();
         services.AddScanRequests();
+        services.AddSubtitles();
 
         return services;
     }

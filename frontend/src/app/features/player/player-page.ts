@@ -18,7 +18,34 @@ import { Router, RouterLink } from '@angular/router';
 
 import { PlaybackApi, type PlaybackInfo } from '../../core/playback/playback-api';
 import { PlayerService } from '../../core/playback/player-service';
+import {
+  SUBTITLES_OFF,
+  SubtitlesApi,
+  pickInitialTrack,
+  pickToggleTrack,
+} from '../../core/playback/subtitles-api';
 import { MIN_RESUME_SECONDS, formatDuration } from '../../shared/item-display';
+import { CompareDivider, type VideoCover } from './compare-divider';
+import type { EnhancerStats, GpuInfo, OutputRect, Size } from './enhancer/enhancer-params';
+import { EnhancerSession } from './enhancer-session';
+import { PlayerControls } from './player-controls';
+import {
+  readRescaleSettings,
+  readSubtitlePreference,
+  writeRescaleSettings,
+  writeSubtitlePreference,
+} from './player-preferences';
+import { RescalePanel } from './rescale-panel';
+import {
+  DEFAULT_RESCALE,
+  DEFAULT_SPLIT,
+  type RescaleSettings,
+  toEnhancerParams,
+} from './rescale-settings';
+import { SubtitleLayer } from './subtitle-layer';
+import { SubtitleMenu } from './subtitle-menu';
+import { type ActiveCue, SubtitleTrackBinder } from './subtitle-track-binder';
+import { VIDEO_ENHANCER_FACTORY, WEBGPU_SUPPORT } from './video-enhancer';
 
 /** Cada cuántos milisegundos se guarda el progreso mientras se reproduce. */
 export const SAVE_INTERVAL_MS = 10_000;
@@ -32,19 +59,40 @@ export const AUTO_NEXT_SECONDS = 5;
 /** Segundos que mueven las flechas del teclado. */
 const SKIP_SECONDS = 10;
 
+/** Sin mover el ratón durante este tiempo, mientras se reproduce, la barra de controles se oculta. */
+export const CONTROLS_HIDE_MS = 3000;
+
 /**
- * Reproductor de video (PLAN.md, secciones 9 y 11): `<video>` a todo lo ancho sobre fondo oscuro que
- * retoma donde se quedó el usuario y guarda el progreso cada 10 segundos, al pausar, al terminar y al
- * salir de la página (con `fetch` y `keepalive`, que sobrevive al cierre). Al terminar marca el
- * episodio como visto y ofrece el siguiente de la misma carpeta, con una cuenta regresiva corta que se
- * puede cancelar. Atajos: flechas para saltar 10 s y F para la pantalla completa.
+ * Reproductor de video (PLAN.md, secciones 9 y 11): el escenario (video, lienzo de WebGPU, subtítulos y barra de
+ * controles) a pantalla completa sobre fondo oscuro. Retoma donde se quedó el usuario y guarda el progreso cada 10
+ * segundos, al pausar, al terminar y al salir de la página (con `fetch` y `keepalive`, que sobrevive al cierre).
+ * Al terminar marca el episodio como visto y ofrece el siguiente de la misma carpeta, con una cuenta regresiva
+ * corta que se puede cancelar.
+ *
+ * Los controles son propios (la barra nativa quedaría tapada por el lienzo): se ocultan solos a los 3 s sin mover
+ * el ratón. Con "Reescalar" el video pasa por la GPU (WebGPU); empieza en Original, sin trabajo de GPU. Los
+ * subtítulos se dibujan en una capa HTML encima de todo, así se ven con o sin reescalado.
+ *
+ * Atajos: espacio o K (reproducir y pausar), flechas (±10 s), M (silencio), C (subtítulos) y F (pantalla completa).
  */
 @Component({
   selector: 'app-player-page',
-  imports: [MatButton, MatIcon, MatIconButton, MatProgressBar, RouterLink],
+  imports: [
+    CompareDivider,
+    MatButton,
+    MatIcon,
+    MatIconButton,
+    MatProgressBar,
+    PlayerControls,
+    RescalePanel,
+    RouterLink,
+    SubtitleLayer,
+    SubtitleMenu,
+  ],
   host: {
     '(window:keydown)': 'onKeydown($event)',
     '(window:pagehide)': 'saveOnExit()',
+    '(document:fullscreenchange)': 'onFullscreenChange()',
   },
   template: `
     <div class="player">
@@ -97,22 +145,57 @@ const SKIP_SECONDS = 10;
             <a matButton="filled" [routerLink]="['/items', id()]">Ir al detalle</a>
           </section>
         } @else {
-          <div class="stage" #stage>
+          <div
+            class="stage"
+            #stage
+            [class.idle]="playing() && !controlsShown()"
+            (pointermove)="onPointer()"
+            (pointerdown)="onPointer()"
+          >
             <video
               #video
               class="video"
-              controls
               autoplay
               playsinline
               preload="auto"
               [src]="current.streamUrl"
               [attr.aria-label]="heading()"
               (loadedmetadata)="onLoadedMetadata(current)"
+              (durationchange)="onDurationChange()"
+              (timeupdate)="onTimeUpdate()"
+              (volumechange)="onVolumeChange()"
               (play)="onPlay()"
               (pause)="onPause()"
               (ended)="onEnded(current)"
               (error)="onError()"
+              (click)="togglePlay()"
+              (dblclick)="toggleFullscreen()"
             ></video>
+            <canvas
+              #canvas
+              class="canvas"
+              [class.visible]="enhancing()"
+              aria-hidden="true"
+              (click)="togglePlay()"
+              (dblclick)="toggleFullscreen()"
+            ></canvas>
+
+            @if (view() === 'compare') {
+              <app-compare-divider
+                [cover]="cover()"
+                [split]="split()"
+                (splitChange)="split.set($event)"
+              />
+            }
+
+            <app-subtitle-layer [cues]="cues()" [raised]="barVisible()" />
+
+            @if (rescaleError(); as message) {
+              <div class="notice alert" role="alert">
+                <span>La GPU falló: {{ message }} Se volvió al video original.</span>
+                <button matButton="text" type="button" (click)="rescaleError.set(null)">Cerrar</button>
+              </div>
+            }
 
             @if (resumedAt() !== null && !ended() && !failed()) {
               <div class="notice" role="status">
@@ -169,6 +252,43 @@ const SKIP_SECONDS = 10;
                 </div>
               </section>
             }
+
+            <app-player-controls
+              [visible]="barVisible()"
+              [playing]="playing()"
+              [currentTime]="currentTime()"
+              [duration]="duration()"
+              [volume]="volume()"
+              [muted]="muted()"
+              [fullscreen]="fullscreen()"
+              [hasPrevious]="!!current.previousId"
+              [hasNext]="!!current.nextId"
+              (togglePlay)="togglePlay()"
+              (seek)="seekTo($event)"
+              (skip)="skipBy($event)"
+              (volumeChange)="setVolume($event)"
+              (toggleMute)="toggleMute()"
+              (goPrevious)="go(current.previousId)"
+              (goNext)="go(current.nextId)"
+              (toggleFullscreen)="toggleFullscreen()"
+              (focusin)="barFocused.set(true)"
+              (focusout)="onBarFocusOut($event)"
+            >
+              <app-subtitle-menu
+                [tracks]="tracks()"
+                [activeId]="activeTrackId()"
+                (choose)="chooseSubtitle($event)"
+                (openChange)="subtitleMenuOpen.set($event)"
+              />
+              <app-rescale-panel
+                [settings]="panelSettings()"
+                [supported]="webgpu"
+                [info]="rescaleInfo()"
+                (settingsChange)="setRescale($event)"
+                (reset)="resetRescale()"
+                (openChange)="rescaleOpen.set($event)"
+              />
+            </app-player-controls>
           </div>
         }
       }
@@ -212,28 +332,42 @@ const SKIP_SECONDS = 10;
 
     .stage {
       position: relative;
-      display: flex;
       flex: 1;
-      min-height: 0;
+      min-height: calc(100dvh - 64px);
+      overflow: hidden;
+      background: #000;
+    }
+
+    .stage.idle {
+      cursor: none;
+    }
+
+    .video,
+    .canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       background: #000;
     }
 
     .video {
-      width: 100%;
-      height: calc(100dvh - 64px);
       object-fit: contain;
-      background: #000;
     }
 
-    .video:focus-visible {
-      outline: 3px solid var(--mat-sys-primary);
-      outline-offset: -3px;
+    .canvas {
+      display: none;
+    }
+
+    .canvas.visible {
+      display: block;
     }
 
     .notice {
       position: absolute;
-      bottom: 72px;
+      bottom: 96px;
       left: 16px;
+      z-index: 3;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -243,9 +377,20 @@ const SKIP_SECONDS = 10;
       font: var(--mat-sys-body-medium);
     }
 
+    .notice.alert {
+      top: 16px;
+      bottom: auto;
+      left: 50%;
+      max-width: calc(100% - 32px);
+      transform: translateX(-50%);
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+
     .overlay {
       position: absolute;
       inset: 0;
+      z-index: 3;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -298,12 +443,19 @@ export class PlayerPage {
   readonly id = input.required<string>();
 
   private readonly api = inject(PlaybackApi);
+  private readonly subtitlesApi = inject(SubtitlesApi);
   private readonly router = inject(Router);
   private readonly document = inject(DOCUMENT);
+  private readonly enhancerFactory = inject(VIDEO_ENHANCER_FACTORY);
+
+  /** El navegador tiene WebGPU; sin él, Reescalar queda deshabilitado. */
+  protected readonly webgpu = inject(WEBGPU_SUPPORT);
 
   protected readonly info = this.api.info(() => this.id());
+  private readonly subtitleList = this.subtitlesApi.tracks(() => this.id());
 
   private readonly video = viewChild<ElementRef<HTMLVideoElement>>('video');
+  private readonly canvas = viewChild<ElementRef<HTMLCanvasElement>>('canvas');
   private readonly stage = viewChild<ElementRef<HTMLElement>>('stage');
 
   /** Segundos desde los que se retomó el video; null si empezó de cero o el aviso ya se ocultó. */
@@ -314,6 +466,58 @@ export class PlayerPage {
   protected readonly failed = signal(false);
   /** Segundos que faltan para pasar solo al siguiente episodio; null si no hay cuenta regresiva. */
   protected readonly countdown = signal<number | null>(null);
+
+  // ── Estado del <video>, para la barra de controles ──
+  protected readonly playing = signal(false);
+  protected readonly currentTime = signal(0);
+  protected readonly duration = signal(0);
+  protected readonly volume = signal(1);
+  protected readonly muted = signal(false);
+  protected readonly fullscreen = signal(false);
+
+  // ── Barra de controles: se oculta sola ──
+  protected readonly controlsShown = signal(true);
+  protected readonly barFocused = signal(false);
+  protected readonly subtitleMenuOpen = signal(false);
+  protected readonly rescaleOpen = signal(false);
+  /** La barra se ve: no está oculta por la inactividad y nada la tapa (fin del video o un error). */
+  protected readonly barVisible = computed(
+    () => this.controlsShown() && !this.ended() && !this.failed(),
+  );
+
+  // ── Reescalado con la GPU ──
+  protected readonly rescale = signal<RescaleSettings>(readRescaleSettings());
+  /** Fracción del video que se ve sin mejorar en la vista Comparar. */
+  protected readonly split = signal(DEFAULT_SPLIT);
+  protected readonly cover = signal<VideoCover | null>(null);
+  protected readonly gpu = signal<GpuInfo | null>(null);
+  protected readonly fps = signal<number | null>(null);
+  protected readonly rescaleError = signal<string | null>(null);
+  /** Sin WebGPU, todo es Original aunque lo guardado diga otra cosa. */
+  protected readonly view = computed(() => (this.webgpu ? this.rescale().view : 'original'));
+  protected readonly panelSettings = computed<RescaleSettings>(() => ({
+    ...this.rescale(),
+    view: this.view(),
+  }));
+  /** El lienzo se ve: se pidió Mejorado o Comparar y ya dibujó el primer cuadro. */
+  protected readonly enhancing = computed(() => this.view() !== 'original' && this.cover() !== null);
+  protected readonly rescaleInfo = computed(() => {
+    const gpu = this.gpu();
+    if (!gpu || this.view() === 'original') {
+      return null;
+    }
+    const name = [gpu.vendor, gpu.architecture].filter(Boolean).join(' ') || gpu.description || 'GPU';
+    const label = gpu.isFallback ? `${name} (por software: lento)` : name;
+    const fps = this.fps();
+    return fps ? `${label} · ${fps} cuadros/s` : label;
+  });
+
+  // ── Subtítulos ──
+  protected readonly tracks = computed(() =>
+    this.subtitleList.hasValue() ? (this.subtitleList.value() ?? []) : [],
+  );
+  protected readonly activeTrackId = signal<string | null>(null);
+  protected readonly cues = signal<readonly ActiveCue[]>([]);
 
   /** Los datos de reproducción, o undefined mientras cargan o si fallaron (en Angular 22, value() con error lanza). */
   protected readonly current = computed(() => (this.info.hasValue() ? this.info.value() : undefined));
@@ -337,6 +541,16 @@ export class PlayerPage {
   private saveTimer: ReturnType<typeof setInterval> | undefined;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
   private countdownTimer: ReturnType<typeof setInterval> | undefined;
+  private hideTimer: ReturnType<typeof setTimeout> | undefined;
+  /** La última interacción fue con el teclado: el foco en la barra la mantiene a la vista. */
+  private keyboardMode = false;
+
+  private session: EnhancerSession | undefined;
+  private sessionVideo: HTMLVideoElement | undefined;
+  private binder: SubtitleTrackBinder | undefined;
+  private binderVideo: HTMLVideoElement | undefined;
+  /** Última pista que el usuario eligió en este video: la que vuelve a encender la tecla C. */
+  private lastTrackId: string | null = null;
 
   constructor() {
     // La música y el video no suenan a la vez.
@@ -348,15 +562,46 @@ export class PlayerPage {
       untracked(() => this.reset());
     });
 
+    // El enhancer sigue al <video> y a los ajustes. En Original no crea nada.
+    effect(() => {
+      const video = this.video()?.nativeElement;
+      const canvas = this.canvas()?.nativeElement;
+      const stage = this.stage()?.nativeElement;
+      const settings = this.panelSettings();
+      const split = this.split();
+      untracked(() => this.syncEnhancer(video, canvas, stage, settings, split));
+    });
+
+    // Al conocer las pistas de un episodio se activa la que corresponde (idioma recordado, forzada o predeterminada).
+    effect(() => {
+      const tracks = this.tracks();
+      untracked(() => {
+        const pick = pickInitialTrack(tracks, readSubtitlePreference());
+        this.lastTrackId = pick?.id ?? null;
+        this.activeTrackId.set(pick?.id ?? null);
+      });
+    });
+
+    // La pista activa se carga en el <video> como <track> oculto.
+    effect(() => {
+      const video = this.video()?.nativeElement;
+      const track = this.tracks().find((candidate) => candidate.id === this.activeTrackId()) ?? null;
+      untracked(() => this.syncSubtitles(video, track));
+    });
+
     inject(DestroyRef).onDestroy(() => {
       this.saveOnExit();
       this.clearTimers();
+      this.disposeSession();
+      this.binder?.detach();
     });
   }
 
   protected time(seconds: number | null): string {
     return formatDuration(seconds) || '0:00';
   }
+
+  // ───────────────────────── eventos del <video> ─────────────────────────
 
   /** Al conocer el video: retoma la posición guardada y habilita el guardado. */
   protected onLoadedMetadata(info: PlaybackInfo): void {
@@ -366,25 +611,54 @@ export class PlayerPage {
     }
     const saved = info.positionSeconds;
     const duration = Number.isFinite(video.duration) ? video.duration : (info.durationSeconds ?? 0);
+    this.duration.set(duration);
     if (saved >= MIN_RESUME_SECONDS && (duration <= 0 || saved < duration - MIN_RESUME_SECONDS)) {
       video.currentTime = saved;
+      this.currentTime.set(saved);
       this.resumedAt.set(saved);
       clearTimeout(this.noticeTimer);
       this.noticeTimer = setTimeout(() => this.resumedAt.set(null), RESUME_NOTICE_MS);
     }
     this.lastVideo = video;
     this.ready = true;
+    this.onVolumeChange();
+  }
+
+  protected onDurationChange(): void {
+    const video = this.video()?.nativeElement;
+    if (video && Number.isFinite(video.duration)) {
+      this.duration.set(video.duration);
+    }
+  }
+
+  protected onTimeUpdate(): void {
+    const video = this.video()?.nativeElement;
+    if (video) {
+      this.currentTime.set(video.currentTime);
+    }
+  }
+
+  protected onVolumeChange(): void {
+    const video = this.video()?.nativeElement;
+    if (video) {
+      this.volume.set(video.volume);
+      this.muted.set(video.muted);
+    }
   }
 
   protected onPlay(): void {
+    this.playing.set(true);
     this.ended.set(false);
     this.finished = false;
     this.cancelCountdown();
     clearInterval(this.saveTimer);
     this.saveTimer = setInterval(() => this.save(), SAVE_INTERVAL_MS);
+    this.wake();
   }
 
   protected onPause(): void {
+    this.playing.set(false);
+    this.controlsShown.set(true);
     clearInterval(this.saveTimer);
     // Al llegar al final el video se pausa antes de avisar que terminó: eso lo guarda onEnded.
     if (!this.activeVideo()?.ended) {
@@ -394,6 +668,7 @@ export class PlayerPage {
 
   protected onEnded(info: PlaybackInfo): void {
     clearInterval(this.saveTimer);
+    this.playing.set(false);
     this.finished = true;
     this.ended.set(true);
     this.api.markPlayed(this.id()).catch(() => undefined);
@@ -406,6 +681,72 @@ export class PlayerPage {
     clearInterval(this.saveTimer);
     this.ready = false;
     this.failed.set(true);
+  }
+
+  // ───────────────────────── controles ─────────────────────────
+
+  protected togglePlay(): void {
+    const video = this.video()?.nativeElement;
+    if (!video) {
+      return;
+    }
+    if (video.paused || video.ended) {
+      Promise.resolve(video.play()).catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  }
+
+  protected seekTo(seconds: number): void {
+    const video = this.video()?.nativeElement;
+    if (!video || !Number.isFinite(seconds)) {
+      return;
+    }
+    const target = Number.isFinite(video.duration)
+      ? Math.min(Math.max(seconds, 0), video.duration)
+      : Math.max(seconds, 0);
+    video.currentTime = target;
+    this.currentTime.set(target);
+  }
+
+  protected skipBy(seconds: number): void {
+    const video = this.video()?.nativeElement;
+    if (video) {
+      this.seekTo(video.currentTime + seconds);
+    }
+  }
+
+  protected setVolume(value: number): void {
+    const video = this.video()?.nativeElement;
+    if (!video || !Number.isFinite(value)) {
+      return;
+    }
+    video.volume = Math.min(1, Math.max(0, value));
+    video.muted = value <= 0;
+    this.onVolumeChange();
+  }
+
+  protected toggleMute(): void {
+    const video = this.video()?.nativeElement;
+    if (video) {
+      video.muted = !video.muted;
+      this.onVolumeChange();
+    }
+  }
+
+  /** La pantalla completa es el escenario entero: video, lienzo, subtítulos y barra. */
+  protected toggleFullscreen(): void {
+    if (this.document.fullscreenElement) {
+      this.document.exitFullscreen?.()?.catch(() => undefined);
+    } else {
+      this.stage()?.nativeElement.requestFullscreen?.()?.catch(() => undefined);
+    }
+  }
+
+  onFullscreenChange(): void {
+    const stage = this.stage()?.nativeElement;
+    this.fullscreen.set(!!stage && this.document.fullscreenElement === stage);
+    this.wake();
   }
 
   /** Vuelve al principio y oculta el aviso de que se retomó. */
@@ -443,6 +784,157 @@ export class PlayerPage {
     this.countdown.set(null);
   }
 
+  // ───────────────────────── barra de controles que se oculta sola ─────────────────────────
+
+  /** Mostrar la barra y volver a contar los 3 s: al mover el ratón, tocar, teclear o cambiar de pantalla. */
+  protected wake(): void {
+    this.controlsShown.set(true);
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.hideIfIdle(), CONTROLS_HIDE_MS);
+  }
+
+  /** Con el ratón o el dedo la barra se oculta aunque conserve el foco. */
+  protected onPointer(): void {
+    this.keyboardMode = false;
+    this.wake();
+  }
+
+  protected onBarFocusOut(event: FocusEvent): void {
+    const bar = event.currentTarget as HTMLElement | null;
+    if (!bar?.contains(event.relatedTarget as Node | null)) {
+      this.barFocused.set(false);
+    }
+  }
+
+  private hideIfIdle(): void {
+    // Solo se oculta mientras se reproduce y nada la necesita: ni un menú abierto, ni el foco del teclado en ella.
+    const busy =
+      !this.playing() ||
+      this.subtitleMenuOpen() ||
+      this.rescaleOpen() ||
+      (this.keyboardMode && this.barFocused());
+    if (!busy) {
+      this.controlsShown.set(false);
+    }
+  }
+
+  // ───────────────────────── reescalado ─────────────────────────
+
+  protected setRescale(next: RescaleSettings): void {
+    this.rescale.set(next);
+    writeRescaleSettings(next);
+    if (next.view !== 'original') {
+      this.rescaleError.set(null);
+    }
+  }
+
+  /** Restablecer vuelve las opciones a su valor por omisión; la vista se queda como está. */
+  protected resetRescale(): void {
+    this.split.set(DEFAULT_SPLIT);
+    this.setRescale({ ...DEFAULT_RESCALE, view: this.rescale().view });
+  }
+
+  private syncEnhancer(
+    video: HTMLVideoElement | undefined,
+    canvas: HTMLCanvasElement | undefined,
+    stage: HTMLElement | undefined,
+    settings: RescaleSettings,
+    split: number,
+  ): void {
+    if (!video || !canvas || !stage || !this.webgpu) {
+      this.disposeSession();
+      return;
+    }
+    if (this.sessionVideo !== video) {
+      // Un <video> nuevo (otro episodio): sesión nueva. No crea nada de GPU hasta que se pida Mejorado o Comparar.
+      this.disposeSession();
+      this.sessionVideo = video;
+      this.session = new EnhancerSession(canvas, video, stage, this.enhancerFactory, {
+        onReady: (gpu) => this.gpu.set(gpu),
+        onStats: (stats: EnhancerStats) => this.fps.set(stats.fps),
+        onLayout: (rect: OutputRect, size: Size) => this.cover.set(coverOf(rect, size)),
+        onError: (message) => this.failRescale(message),
+      });
+    }
+    void this.session?.apply(settings.view, toEnhancerParams(settings, split));
+  }
+
+  /** La GPU falló: se vuelve a Original (y así queda recordado) con un aviso. */
+  private failRescale(message: string): void {
+    this.rescaleError.set(message);
+    if (this.rescale().view !== 'original') {
+      this.setRescale({ ...this.rescale(), view: 'original' });
+      this.rescaleError.set(message);
+    }
+  }
+
+  private disposeSession(): void {
+    this.session?.destroy();
+    this.session = undefined;
+    this.sessionVideo = undefined;
+    this.gpu.set(null);
+    this.fps.set(null);
+    this.cover.set(null);
+  }
+
+  // ───────────────────────── subtítulos ─────────────────────────
+
+  /** El usuario eligió una pista (o Desactivados) y se recuerda el idioma para el siguiente episodio. */
+  protected chooseSubtitle(id: string | null): void {
+    this.activeTrackId.set(id);
+    if (id === null) {
+      writeSubtitlePreference(SUBTITLES_OFF);
+      return;
+    }
+    this.lastTrackId = id;
+    writeSubtitlePreference(this.tracks().find((track) => track.id === id)?.language ?? null);
+  }
+
+  /** La tecla C: quita los subtítulos o vuelve a poner la última pista (o la del idioma recordado). */
+  protected toggleSubtitles(): void {
+    const tracks = this.tracks();
+    if (tracks.length === 0) {
+      return;
+    }
+    if (this.activeTrackId() !== null) {
+      this.chooseSubtitle(null);
+      return;
+    }
+    const track =
+      tracks.find((candidate) => candidate.id === this.lastTrackId) ??
+      pickToggleTrack(tracks, readSubtitlePreference());
+    if (track) {
+      this.chooseSubtitle(track.id);
+    }
+  }
+
+  private syncSubtitles(
+    video: HTMLVideoElement | undefined,
+    track: { id: string } | null,
+  ): void {
+    if (!video) {
+      this.binder?.detach();
+      this.binder = undefined;
+      this.binderVideo = undefined;
+      return;
+    }
+    let binder = this.binder;
+    if (!binder || this.binderVideo !== video) {
+      binder?.detach();
+      binder = new SubtitleTrackBinder(video, (cues) => this.cues.set(cues), this.document);
+      this.binder = binder;
+      this.binderVideo = video;
+    }
+    const full = this.tracks().find((candidate) => candidate.id === track?.id);
+    if (full) {
+      binder.attach(full);
+    } else {
+      binder.detach();
+    }
+  }
+
+  // ───────────────────────── teclado ─────────────────────────
+
   /** Guarda la posición con `fetch` y `keepalive`: sobrevive al cierre de la pestaña. */
   saveOnExit(): void {
     const video = this.activeVideo();
@@ -456,43 +948,48 @@ export class PlayerPage {
     if (event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
+    this.keyboardMode = true;
+    this.wake();
     const target = event.target as HTMLElement | null;
-    if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) {
+    const tag = target?.tagName ?? '';
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || target?.isContentEditable) {
       return;
     }
     const video = this.video()?.nativeElement;
     if (!video) {
       return;
     }
-    switch (event.key) {
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    switch (key) {
+      case ' ':
+      case 'k':
+        // Sobre un botón o un enlace el espacio ya lo activa el navegador: no se duplica.
+        if (key === ' ' && (tag === 'BUTTON' || tag === 'A')) {
+          return;
+        }
+        event.preventDefault();
+        this.togglePlay();
+        break;
       case 'ArrowRight':
         event.preventDefault();
-        this.skip(video, SKIP_SECONDS);
+        this.skipBy(SKIP_SECONDS);
         break;
       case 'ArrowLeft':
         event.preventDefault();
-        this.skip(video, -SKIP_SECONDS);
+        this.skipBy(-SKIP_SECONDS);
+        break;
+      case 'm':
+        event.preventDefault();
+        this.toggleMute();
+        break;
+      case 'c':
+        event.preventDefault();
+        this.toggleSubtitles();
         break;
       case 'f':
-      case 'F':
         event.preventDefault();
         this.toggleFullscreen();
         break;
-    }
-  }
-
-  private skip(video: HTMLVideoElement, seconds: number): void {
-    const target = video.currentTime + seconds;
-    video.currentTime = Number.isFinite(video.duration)
-      ? Math.min(Math.max(target, 0), video.duration)
-      : Math.max(target, 0);
-  }
-
-  private toggleFullscreen(): void {
-    if (this.document.fullscreenElement) {
-      this.document.exitFullscreen?.()?.catch(() => undefined);
-    } else {
-      this.stage()?.nativeElement.requestFullscreen?.()?.catch(() => undefined);
     }
   }
 
@@ -535,11 +1032,27 @@ export class PlayerPage {
     this.ended.set(false);
     this.failed.set(false);
     this.countdown.set(null);
+    this.playing.set(false);
+    this.currentTime.set(0);
+    this.duration.set(0);
+    this.controlsShown.set(true);
+    this.rescaleError.set(null);
   }
 
   private clearTimers(): void {
     clearInterval(this.saveTimer);
     clearInterval(this.countdownTimer);
     clearTimeout(this.noticeTimer);
+    clearTimeout(this.hideTimer);
   }
+}
+
+/** Dónde queda el video dentro del lienzo, en porcentajes del escenario (el comparador se coloca encima). */
+function coverOf(rect: OutputRect, canvas: Size): VideoCover {
+  return {
+    left: (rect.x / canvas.width) * 100,
+    top: (rect.y / canvas.height) * 100,
+    width: (rect.width / canvas.width) * 100,
+    height: (rect.height / canvas.height) * 100,
+  };
 }

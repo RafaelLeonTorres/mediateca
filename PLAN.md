@@ -26,8 +26,8 @@ Dónde vive cada cosa:
 
 ### No incluye (extensiones posibles)
 
-- Transcodificación con FFmpeg: el MVP reproduce solo los formatos que el navegador soporta.
-- Subtítulos, TV en vivo, DLNA, apps móviles, plugins y perfiles infantiles.
+- Transcodificación con FFmpeg: el MVP reproduce solo los formatos que el navegador soporta. FFmpeg ya se usa para extraer subtítulos (fase 5b), pero todavía no para convertir video.
+- Subtítulos de imagen (PGS, VobSub), edición o descarga de subtítulos, TV en vivo, DLNA, apps móviles, plugins y perfiles infantiles.
 - Otros proveedores, como TMDb (resúmenes en español), AniDB o MusicBrainz (música). La arquitectura los admite, pero no entran en el MVP.
 
 ---
@@ -303,6 +303,10 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 
 - `GET /api/items/{id}/stream`: valida el acceso y responde con `TypedResults.PhysicalFile(ruta, mime, enableRangeProcessing: true)`. Así acepta `Range` y responde 206, que es lo que permite adelantar y regresar. La ruta siempre sale de la base de datos y se verifica que esté dentro de la carpeta de la biblioteca.
 - Formatos del MVP: MP4 (H.264/AAC) y WebM para video; MP3, AAC/M4A, FLAC y Ogg/Opus para audio. Si el navegador no puede reproducir un archivo (por ejemplo, un MKV con códecs incompatibles), la app lo indica y ofrece descargarlo. Reempaquetar con FFmpeg queda como extensión.
+- **Reproductor propio (fase 5b):** el `<video>` ya no usa la barra nativa: la barra de controles es propia (reproducir y pausa, tiempo, barra de avance que se arrastra, volumen y silencio, subtítulos, Reescalar, pantalla completa, anterior y siguiente) y se oculta sola a los 3 s sin mover el ratón mientras se reproduce. La pantalla completa es el escenario entero (video, lienzo, subtítulos y controles). Atajos: espacio o K, flechas ±10 s, M, C y F; no se activan al escribir en un campo ni con Ctrl, Alt o Meta, y el espacio sobre un botón lo deja al navegador.
+- **Reescalado con GPU (fase 5b):** el botón "Reescalar" abre un panel con la vista (Original, Mejorado o Comparar, con un divisor que se arrastra), la resolución de salida (Pantalla, 720p, 1080p, 1440p, 4K), el escalado (Bilineal, Bicúbico, Lanczos 2 o Lanczos 3), nitidez adaptativa, reducción de ruido, anti-ringing, dithering y Restablecer. Se calcula en el navegador con WebGPU (el código sale del proyecto reproductor-video-gpu): el video se importa como textura externa y se dibuja en un `<canvas>` sobre el `<video>`. Empieza en Original, sin trabajo de GPU: el enhancer se crea (con una importación dinámica) la primera vez que se elige Mejorado o Comparar. Lo último que se eligió se recuerda en `localStorage`. Sin WebGPU el botón queda deshabilitado con un aviso; si la GPU falla, vuelve a Original y lo avisa. El servidor no interviene.
+- **Subtítulos (fase 5b):** `GET /api/items/{id}/subtitles` lista las pistas de texto: las incrustadas en el contenedor (se leen con `ffprobe`) y los archivos sueltos junto al video (`.srt`, `.vtt`, `.ass`, `.ssa` cuyo nombre empieza con el del video, por ejemplo `Capitulo 01.es.srt` o `Capitulo 01.en.forced.vtt`). Los ids son `e{n}` (stream `n` del contenedor) y `x{n}` (archivo suelto). Las etiquetas salen en español ("Español", "Inglés (forzados)", "Pista 3") y los duplicados se distinguen por título, origen o número. Solo se ofrecen códecs de texto (subrip, ass, ssa, mov_text, webvtt, text); los de imagen se ignoran. `GET /api/items/{id}/subtitles/{trackId}.vtt` entrega WebVTT: los `.vtt` tal cual, los `.srt` convertidos en C#, los `.ass` y `.ssa` con FFmpeg (o con un convertidor propio si no está) y las incrustadas con `ffmpeg`, con un límite de extracciones a la vez, un tiempo máximo y una caché en disco (`{DataPath}/subtitles/{itemId}-{trackId}-{ticks}.vtt`; `ticks` es la fecha de modificación del video, así que cambia con el archivo). La lista se guarda en memoria por ruta y fecha de modificación. Nunca se sirve un archivo fuera de las carpetas de medios.
+- **Subtítulos en el reproductor:** el botón CC solo aparece si hay pistas. Su menú ofrece "Desactivados" y una opción por pista; la elegida se carga como `<track kind="subtitles">` en modo `hidden` y los cues se dibujan en una capa HTML (con `cuechange`, `activeCues` y `getCueAsHTML()`) encima del video y del lienzo: texto blanco con contorno negro, de tamaño relativo al alto del escenario, y más arriba mientras la barra está visible. El idioma elegido se recuerda en `localStorage` y se activa solo en el siguiente episodio. Por omisión están desactivados, salvo que una pista sea forzada o predeterminada.
 - **Progreso:** Angular guarda la posición cada 10 segundos, al pausar, al terminar y al salir (en la salida, con `fetch` y `keepalive`, leyendo el token XSRF de la cookie). El servidor hace el alta o la actualización (`PUT /api/items/{id}/progress`); si la posición pasa del 90 % de la duración, marca el elemento como visto y regresa la posición a 0. Sin duración conocida el servidor nunca lo marca como visto: el cliente avisa con `POST /api/items/{id}/played` cuando el video termina. Una posición menor al 90 % no quita la marca de visto. Valores negativos o no finitos responden 400.
 - **Visto / no visto:** `POST` y `DELETE /api/items/{id}/played` aplican a un episodio, una película o una pista, y en lote a una serie, temporada o álbum (todo lo que contienen). Marcar como visto fija `LastPlayedAt`; marcar como no visto borra el progreso. Las series y temporadas traen `unplayedCount`.
 - **Continuar viendo:** `GET /api/me/continue-watching` lista películas y episodios con posición guardada y sin ver, del más reciente al más antiguo. Cada tarjeta lleva directo a `/reproducir/:id`.
@@ -331,6 +335,8 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 | `GET /api/items/{id}` · `GET /api/items/{id}/children` · `GET /api/items/{id}/image` | usuario | Detalle, temporadas, episodios o pistas, y póster |
 | `GET /api/items/{id}/stream` | usuario | Reproducción con `Range` (206 y 416), tipo MIME por extensión y `Cache-Control: private`; 404 si no es reproducible, falta el archivo o está fuera de las raíces |
 | `GET /api/items/{id}/playback` | usuario | Datos para reproducir: URL del stream, MIME, duración, posición guardada, título, contexto y ids anterior y siguiente |
+| `GET /api/items/{id}/subtitles` | usuario | Pistas de subtítulos de texto de un video: `[{ id, label, language, codec, source, isDefault, isForced, url }]`. `source` es `embedded` o `external`; `language` es un código de 2 letras o `null`. 404 si no es un video accesible |
+| `GET /api/items/{id}/subtitles/{trackId}.vtt` | usuario | La pista en WebVTT (`text/vtt; charset=utf-8`, `Cache-Control: private`). 404 si la pista no existe o el archivo está fuera de las raíces; 502 si FFmpeg falla al extraerla |
 | `PUT /api/items/{id}/progress` | usuario | Guardar posición (`{ positionSeconds }`); pasado el 90 % marca como visto. 400 si el valor no es válido |
 | `POST /api/items/{id}/played` · `DELETE /api/items/{id}/played` | usuario | Marcar como visto o no visto; en una serie, temporada o álbum, a todo su contenido |
 | `GET /api/items/{id}/next-up` | usuario | Qué ver a continuación en una serie o temporada (204 si no queda nada) |
@@ -352,7 +358,7 @@ Pantallas:
 | `/` | Inicio: Continuar viendo, Agregado recientemente y Mis bibliotecas |
 | `/bibliotecas/:id` | Cuadrícula de pósters (o de álbumes, en música) con búsqueda, filtros por año y género, y orden |
 | `/items/:id` | Detalle con póster, título, año, clasificación, calificación, géneros y resumen; temporadas y episodios (con barra de avance y marca de visto), o pistas del álbum; botones Reproducir / Continuar desde, Reproducir álbum y Marcar como visto; tarjeta "A continuación" y, para el admin, Identificar |
-| `/reproducir/:id` | Reproductor de video a pantalla completa, fuera del layout (sin barra superior). Retoma donde te quedaste (con aviso y opción de empezar desde el inicio), guarda el avance, ofrece anterior y siguiente dentro de la misma carpeta, pasa solo al siguiente tras una cuenta regresiva de 5 s, y si el navegador no puede reproducir el archivo ofrece descargarlo. Atajos: flechas ±10 s y F (pantalla completa) |
+| `/reproducir/:id` | Reproductor de video a pantalla completa, fuera del layout (sin barra superior). Retoma donde te quedaste (con aviso y opción de empezar desde el inicio), guarda el avance, ofrece anterior y siguiente dentro de la misma carpeta, pasa solo al siguiente tras una cuenta regresiva de 5 s, y si el navegador no puede reproducir el archivo ofrece descargarlo. Controles propios que se ocultan solos, botón Reescalar (GPU), subtítulos y atajos: espacio o K, flechas ±10 s, M, C y F |
 | `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, y la sección "Escaneo automático" con el horario |
 | `/admin/usuarios` | Usuarios, contraseña y casillas de bibliotecas permitidas |
 
@@ -414,7 +420,8 @@ Estructura y prácticas:
   "Metadata": {
     "Omdb":  { "ApiKey": "" },
     "AniList": { "RequestInterval": "00:00:02" }
-  }
+  },
+  "Media": { "Ffprobe": "ffprobe", "Ffmpeg": "ffmpeg" }
 }
 ```
 
@@ -422,6 +429,7 @@ Estructura y prácticas:
 - Sección `Storage`: `DataPath` es la carpeta de datos de la app; `MediaRoots` son las carpetas de medios (por omisión `/media`, el montaje de `MEDIA_PATH`, que es opcional) y `DrivesPath` (por omisión `/discos`) es la carpeta donde Docker monta los discos, una subcarpeta por disco. `DrivesPath` se suma siempre a las carpetas permitidas; en `appsettings.json` está solo como documentación, porque su valor por omisión es el mismo.
 - Sección `Scanning`: `DefaultCron` y `DefaultEnabled` son el horario inicial (`SCAN_CRON` en `.env`) y solo cuentan mientras no haya uno guardado; después manda el de la administración. `QueuePollInterval`, `ScheduleSyncInterval` y `MinimumInterval` ajustan cada cuánto mira la cola el worker, cada cuánto revisa si cambió el horario y el mínimo entre dos escaneos automáticos. `TZ` es la zona horaria en la que se interpretan los horarios. `.env.example` documenta cada variable y `.env` no se sube a git.
 - Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`. El worker comparte el mismo `UserSecretsId`, así que los user-secrets (cadena de conexión, `Storage:DataPath` y `Storage:MediaRoots:0`) se definen una vez para los dos.
+- Sección `Media`: `Ffprobe` y `Ffmpeg` son el nombre (si están en el `PATH`) o la ruta completa de cada programa, y por omisión valen `ffprobe` y `ffmpeg`. La imagen de Docker de la API los instala. Fuera de Docker, instálalos aparte; si no están, nada falla: solo se pierden los subtítulos incrustados (se registra un aviso) y los archivos sueltos `.srt`, `.vtt`, `.ass` y `.ssa` siguen funcionando. También se pueden ajustar `MaxConcurrentExtractions` (por omisión 2), `ProbeTimeout` (30 s) y `ExtractionTimeout` (2 min). En Docker, `Media__Ffmpeg` y `Media__Ffprobe` son las variables de entorno equivalentes.
 - Antes de la fase 4, pide tu clave gratuita de OMDb en <https://www.omdbapi.com/apikey.aspx>. AniList no pide cuenta ni clave.
 
 ---
@@ -502,6 +510,17 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 
 **Entregable:** ves un video, lo cierras y continúas donde te quedaste; escuchas un álbum completo.
 
+### Fase 5b. Reescalado con GPU y subtítulos
+- [x] Backend: `ffprobe` y `ffmpeg` en la imagen de la API, sección `Media` y un ejecutor de procesos detrás de una interfaz (sin shell, con límite, tiempo máximo y cierre al cancelar).
+- [x] Subtítulos: lista de pistas (incrustadas y archivos sueltos), conversión a WebVTT (SRT y ASS en C#, incrustadas con FFmpeg), caché en memoria y en disco.
+- [x] API: `GET /api/items/{id}/subtitles` y `GET /api/items/{id}/subtitles/{trackId}.vtt`.
+- [x] Angular: barra de controles propia que se oculta sola, atajos (espacio/K, flechas, M, C, F) y pantalla completa del escenario.
+- [x] Angular: botón Reescalar con WebGPU (Original, Mejorado y Comparar; resolución, escalado, nitidez, ruido, anti-ringing, dithering), recordado en `localStorage` y deshabilitado sin WebGPU.
+- [x] Angular: menú de subtítulos, capa de cues en HTML y recuerdo del idioma entre episodios.
+- [x] Pruebas: convertidores, lector de `ffprobe`, etiquetas y servicio (sin FFmpeg instalado, con un ejecutor falso); integración de los dos endpoints; Vitest del panel, el menú, la capa de cues y el reproductor.
+
+**Entregable:** reescalas el video con la GPU y ves los subtítulos de un MKV o de un `.srt` junto al video, con la opción de activarlos y desactivarlos.
+
 ### Fase 6. Cierre para el portafolio
 - [ ] README con descripción, capturas, diagrama y decisiones técnicas (el primer arranque ya está desde la fase 0).
 - [ ] Datos de demostración con contenido libre, por ejemplo las películas abiertas de Blender (Big Buck Bunny, Sintel) con licencia Creative Commons, en la carpeta de `MEDIA_PATH`, para que las capturas no muestren material con derechos de autor.
@@ -527,6 +546,10 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 | AniList limita las solicitudes (hoy, 30 por minuto) y bloquea 1 minuto a quien se pasa | Limitador de 1 cada 2 s, caché y pausa de la cola según `Retry-After` |
 | Límite de 1,000 solicitudes diarias de OMDb | Caché por ID de IMDb y pausa de la cola al llegar al límite |
 | Códecs que el navegador no soporta (MKV) | Reproducción directa solo de formatos compatibles, aviso y descarga; FFmpeg como extensión |
+| Navegadores sin WebGPU (Firefox y Safari según la versión, o sin GPU compatible) | Reescalar es opcional: el botón se deshabilita con el motivo y el video se ve igual en Original. Recomendado: Chrome o Edge actualizados |
+| Extraer subtítulos incrustados cuesta CPU y tiempo (hay que leer el contenedor) | Límite de extracciones a la vez, tiempo máximo, caché en disco por video y pista (se invalida si el archivo cambia) y caché en memoria de la lista; la extracción solo ocurre al activar la pista |
+| Subtítulos quemados en la imagen no se pueden quitar ni cambiar, y los de imagen (PGS, VobSub) no se ofrecen | Solo se listan pistas de texto; lo quemado se ve siempre. Convertir los de imagen con OCR queda como extensión |
+| FFmpeg no está instalado (ejecución fuera de Docker) | Nada falla: se pierden solo los subtítulos incrustados, con un aviso en el registro; los archivos sueltos siguen funcionando |
 | Coincidencias equivocadas por títulos parecidos | Año en el nombre de la carpeta, etiquetas `[imdbid-…]` y `[anilistid-…]`, y el diálogo Identificar |
 | Bibliotecas grandes | Escaneo incremental, guardado en lotes, paginación e índice trigram |
 

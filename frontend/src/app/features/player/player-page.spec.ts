@@ -5,12 +5,21 @@ import { TestBed } from '@angular/core/testing';
 import { Router, type Routes, provideRouter } from '@angular/router';
 
 import type { PlaybackInfo } from '../../core/playback/playback-api';
+import type { SubtitleTrack } from '../../core/playback/subtitles-api';
 import {
   AUTO_NEXT_SECONDS,
   PlayerPage,
   RESUME_NOTICE_MS,
+  CONTROLS_HIDE_MS,
   SAVE_INTERVAL_MS,
 } from './player-page';
+import { RESCALE_STORAGE_KEY, SUBTITLE_STORAGE_KEY } from './player-preferences';
+import {
+  VIDEO_ENHANCER_FACTORY,
+  type VideoEnhancer,
+  type VideoEnhancerFactory,
+  WEBGPU_SUPPORT,
+} from './video-enhancer';
 
 @Component({ template: '' })
 class Blank {}
@@ -47,11 +56,38 @@ describe('PlayerPage', () => {
     };
   }
 
+  function subtitle(extra: Partial<SubtitleTrack> = {}): SubtitleTrack {
+    return {
+      id: 'e2',
+      label: 'Español',
+      language: 'es',
+      codec: 'subrip',
+      source: 'embedded',
+      isDefault: false,
+      isForced: false,
+      url: '/api/items/e2/subtitles/e2.vtt',
+      ...extra,
+    };
+  }
+
+  interface RenderOptions {
+    playback?: PlaybackInfo;
+    tracks?: SubtitleTrack[];
+    webgpu?: boolean;
+    factory?: VideoEnhancerFactory;
+  }
+
   /** Muestra /reproducir/e2 y responde sus datos antes de esperar (`whenStable` espera a lo pendiente). */
-  async function render(playback: PlaybackInfo = info()) {
+  async function render(playback: PlaybackInfo = info(), options: Omit<RenderOptions, 'playback'> = {}) {
     TestBed.configureTestingModule({
       imports: [PlayerPage],
-      providers: [provideRouter(ROUTES), provideHttpClient(), provideHttpClientTesting()],
+      providers: [
+        provideRouter(ROUTES),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: WEBGPU_SUPPORT, useValue: options.webgpu ?? false },
+        ...(options.factory ? [{ provide: VIDEO_ENHANCER_FACTORY, useValue: options.factory }] : []),
+      ],
     });
     const fixture = TestBed.createComponent(PlayerPage);
     fixture.componentRef.setInput('id', 'e2');
@@ -59,6 +95,7 @@ describe('PlayerPage', () => {
     TestBed.tick();
     const http = TestBed.inject(HttpTestingController);
     http.expectOne('/api/items/e2/playback').flush(playback);
+    http.expectOne('/api/items/e2/subtitles').flush(options.tracks ?? []);
     TestBed.tick();
     await fixture.whenStable();
     fixture.detectChanges();
@@ -81,8 +118,11 @@ describe('PlayerPage', () => {
     document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
   };
 
+  beforeEach(() => localStorage.clear());
+
   afterEach(() => {
     vi.useRealTimers();
+    localStorage.clear();
     vi.unstubAllGlobals();
     clearCookie();
   });
@@ -92,7 +132,8 @@ describe('PlayerPage', () => {
 
     expect(element.querySelector('h1')!.textContent).toContain('Mi Anime · Lat · Episodio 3');
     expect(video.getAttribute('src')).toBe('/api/items/e2/stream');
-    expect(video.controls).toBe(true);
+    // Los controles son propios: la barra nativa quedaría tapada por el lienzo.
+    expect(video.controls).toBe(false);
     expect(video.autoplay).toBe(true);
     const back = element.querySelector('a[aria-label="Volver al detalle"]')!;
     expect(back.getAttribute('href')).toBe('/items/e2');
@@ -427,9 +468,9 @@ describe('PlayerPage', () => {
       fixture.componentRef.setInput('id', 'e2');
       fixture.detectChanges();
       TestBed.tick();
-      TestBed.inject(HttpTestingController)
-        .expectOne('/api/items/e2/playback')
-        .flush(null, { status: 404, statusText: 'No encontrado' });
+      const http = TestBed.inject(HttpTestingController);
+      http.expectOne('/api/items/e2/playback').flush(null, { status: 404, statusText: 'No encontrado' });
+      http.expectOne('/api/items/e2/subtitles').flush([]);
       TestBed.tick();
       await fixture.whenStable();
       fixture.detectChanges();
@@ -438,6 +479,317 @@ describe('PlayerPage', () => {
       expect(element.querySelector('[role="alert"]')!.textContent).toContain('No se pudo cargar el video');
       expect(element.querySelector('video')).toBeNull();
       expect(element.querySelector('a[href="/"]')).not.toBeNull();
+    });
+  });
+
+  /** Deja que corran los efectos (pistas elegidas, enhancer) y se pinte lo que cambió. */
+  function settle(fixture: { detectChanges(): void }) {
+    fixture.detectChanges();
+    TestBed.tick();
+    fixture.detectChanges();
+  }
+
+  const query = <T extends Element>(element: HTMLElement, selector: string) =>
+    element.querySelector<T>(selector)!;
+
+  describe('barra de controles', () => {
+    it('el botón reproduce y pausa el video', async () => {
+      const { element, video } = await render();
+      video.play = vi.fn().mockResolvedValue(undefined);
+      video.pause = vi.fn();
+
+      query<HTMLButtonElement>(element, 'button[aria-label="Reproducir"]').click();
+      expect(video.play).toHaveBeenCalledTimes(1);
+    });
+
+    it('espacio y K alternan la reproducción, pero espacio sobre un botón lo deja al navegador', async () => {
+      const { element, video } = await render();
+      video.play = vi.fn().mockResolvedValue(undefined);
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
+      expect(video.play).toHaveBeenCalledTimes(2);
+
+      query<HTMLButtonElement>(element, 'button[aria-label="Reproducir"]').dispatchEvent(
+        new KeyboardEvent('keydown', { key: ' ', bubbles: true }),
+      );
+      expect(video.play).toHaveBeenCalledTimes(2);
+    });
+
+    it('M silencia y vuelve a activar el sonido', async () => {
+      const { video } = await render();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm' }));
+      expect(video.muted).toBe(true);
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'M' }));
+      expect(video.muted).toBe(false);
+    });
+
+    it('se oculta a los 3 segundos mientras se reproduce y vuelve al mover el ratón', async () => {
+      const { fixture, element, video } = await render();
+      vi.useFakeTimers();
+      video.dispatchEvent(new Event('play'));
+      fixture.detectChanges();
+      expect(query(element, '.bar').classList).not.toContain('hidden');
+
+      vi.advanceTimersByTime(CONTROLS_HIDE_MS);
+      fixture.detectChanges();
+      expect(query(element, '.bar').classList).toContain('hidden');
+      expect(query(element, '.stage').classList).toContain('idle');
+
+      query(element, '.stage').dispatchEvent(new Event('pointermove'));
+      fixture.detectChanges();
+      expect(query(element, '.bar').classList).not.toContain('hidden');
+    });
+
+    it('en pausa la barra se queda a la vista', async () => {
+      const { fixture, element, video } = await render();
+      vi.useFakeTimers();
+      video.dispatchEvent(new Event('pause'));
+
+      vi.advanceTimersByTime(CONTROLS_HIDE_MS * 3);
+      fixture.detectChanges();
+
+      expect(query(element, '.bar').classList).not.toContain('hidden');
+    });
+
+    it('con un menú abierto la barra no se oculta', async () => {
+      const { fixture, element, video } = await render(info(), { tracks: [subtitle()] });
+      vi.useFakeTimers();
+      video.dispatchEvent(new Event('play'));
+      query<HTMLButtonElement>(element, 'button[aria-haspopup="menu"]').click();
+      fixture.detectChanges();
+
+      vi.advanceTimersByTime(CONTROLS_HIDE_MS * 2);
+      fixture.detectChanges();
+
+      expect(query(element, '.bar').classList).not.toContain('hidden');
+    });
+
+    it('al terminar el video no muestra la barra encima de la pantalla final', async () => {
+      const { fixture, http, element, video } = await render();
+      video.dispatchEvent(new Event('ended'));
+      http.expectOne('/api/items/e2/played').flush(null, noContent);
+      fixture.detectChanges();
+
+      expect(query(element, '.bar').classList).toContain('hidden');
+    });
+  });
+
+  describe('subtítulos', () => {
+    const spanish = subtitle({ id: 'e2', label: 'Español', language: 'es' });
+    const english = subtitle({
+      id: 'x0',
+      label: 'Inglés',
+      language: 'en',
+      source: 'external',
+      url: '/api/items/e2/subtitles/x0.vtt',
+    });
+
+    it('sin pistas no aparece el botón CC y la tecla C no hace nada', async () => {
+      const { element } = await render();
+
+      expect(element.querySelector('app-subtitle-menu button')).toBeNull();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c' }));
+      expect(element.querySelector('video track')).toBeNull();
+    });
+
+    it('por omisión están desactivados aunque haya pistas', async () => {
+      const { fixture, element, video } = await render(info(), { tracks: [spanish, english] });
+      settle(fixture);
+
+      expect(query(element, 'app-subtitle-menu button').getAttribute('aria-label')).toBe(
+        'Subtítulos: desactivados',
+      );
+      expect(video.querySelector('track')).toBeNull();
+    });
+
+    it('una pista forzada o predeterminada se activa sola', async () => {
+      const { fixture, element, video } = await render(info(), {
+        tracks: [spanish, { ...english, isDefault: true }],
+      });
+      settle(fixture);
+
+      expect(query(element, 'app-subtitle-menu button').getAttribute('aria-label')).toBe('Subtítulos: Inglés');
+      const track = video.querySelector('track')!;
+      expect(track.getAttribute('kind')).toBe('subtitles');
+      expect(track.getAttribute('src')).toBe('/api/items/e2/subtitles/x0.vtt');
+    });
+
+    it('elegir una pista la carga y recuerda su idioma; Desactivados lo recuerda como apagado', async () => {
+      const { fixture, element, video } = await render(info(), { tracks: [spanish, english] });
+      settle(fixture);
+
+      query<HTMLButtonElement>(element, 'app-subtitle-menu button').click();
+      fixture.detectChanges();
+      const items = Array.from(element.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
+      // El ícono de la opción marcada también aporta texto ("check"): por eso se compara con `includes`.
+      expect(items).toHaveLength(3);
+      ['Desactivados', 'Español', 'Inglés'].forEach((label, index) =>
+        expect(items[index].textContent).toContain(label),
+      );
+
+      items[2].click();
+      settle(fixture);
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('en');
+      expect(video.querySelector('track')!.getAttribute('src')).toBe('/api/items/e2/subtitles/x0.vtt');
+
+      query<HTMLButtonElement>(element, 'app-subtitle-menu button').click();
+      fixture.detectChanges();
+      element.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[0].click();
+      settle(fixture);
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('off');
+      expect(video.querySelector('track')).toBeNull();
+    });
+
+    it('con un idioma recordado se activa la pista de ese idioma', async () => {
+      localStorage.setItem(SUBTITLE_STORAGE_KEY, 'en');
+      const { fixture, element } = await render(info(), { tracks: [spanish, english] });
+      settle(fixture);
+
+      expect(query(element, 'app-subtitle-menu button').getAttribute('aria-label')).toBe('Subtítulos: Inglés');
+    });
+
+    it('si el usuario los había desactivado, no se activa ni la pista predeterminada', async () => {
+      localStorage.setItem(SUBTITLE_STORAGE_KEY, 'off');
+      const { fixture, element } = await render(info(), { tracks: [{ ...spanish, isDefault: true }] });
+      settle(fixture);
+
+      expect(query(element, 'app-subtitle-menu button').getAttribute('aria-label')).toBe(
+        'Subtítulos: desactivados',
+      );
+    });
+
+    it('la tecla C los apaga y vuelve a poner la misma pista', async () => {
+      localStorage.setItem(SUBTITLE_STORAGE_KEY, 'en');
+      const { fixture, element } = await render(info(), { tracks: [spanish, english] });
+      settle(fixture);
+      const label = () => query(element, 'app-subtitle-menu button').getAttribute('aria-label');
+      expect(label()).toBe('Subtítulos: Inglés');
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c' }));
+      settle(fixture);
+      expect(label()).toBe('Subtítulos: desactivados');
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('off');
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c' }));
+      settle(fixture);
+      expect(label()).toBe('Subtítulos: Inglés');
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('en');
+    });
+  });
+
+  describe('reescalado con la GPU', () => {
+    function enhancerDouble() {
+      let events: { onError?: (message: string) => void } | undefined;
+      const enhancer: VideoEnhancer = {
+        gpuInfo: {
+          vendor: 'nvidia',
+          architecture: 'ampere',
+          device: '',
+          description: '',
+          isFallback: false,
+          timestampQuery: false,
+          maxTextureSize: 16384,
+        },
+        setParams: vi.fn(),
+        resize: vi.fn(),
+        requestRender: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        destroy: vi.fn(),
+      };
+      const factory = vi.fn(async (_canvas: unknown, _video: unknown, given: unknown) => {
+        events = given as { onError?: (message: string) => void };
+        return enhancer;
+      });
+      return { enhancer, factory, events: () => events! };
+    }
+
+    const choose = (fixture: { detectChanges(): void }, element: HTMLElement, label: string) => {
+      if (!element.querySelector('fieldset')) {
+        query<HTMLButtonElement>(element, 'button[aria-haspopup="dialog"]').click();
+        fixture.detectChanges();
+      }
+      const radio = Array.from(element.querySelectorAll<HTMLLabelElement>('fieldset label')).find((item) =>
+        item.textContent?.includes(label),
+      )!;
+      radio.querySelector<HTMLInputElement>('input')!.click();
+      settle(fixture);
+    };
+
+    it('sin WebGPU el botón está deshabilitado y explica por qué', async () => {
+      const { element } = await render(info(), { webgpu: false });
+
+      const button = query<HTMLButtonElement>(element, 'button[aria-haspopup="dialog"]');
+      expect(button.disabled).toBe(true);
+      expect(element.textContent).toContain('Tu navegador no tiene WebGPU; usa Chrome o Edge actualizados');
+    });
+
+    it('empieza en Original y no crea el enhancer hasta que se pide Mejorado', async () => {
+      const double = enhancerDouble();
+      const { fixture, element } = await render(info(), { webgpu: true, factory: double.factory });
+      settle(fixture);
+      expect(double.factory).not.toHaveBeenCalled();
+      expect(query(element, 'canvas').classList).not.toContain('visible');
+
+      choose(fixture, element, 'Mejorado');
+      await vi.waitFor(() => expect(double.enhancer.start).toHaveBeenCalled());
+
+      expect(double.factory).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(localStorage.getItem(RESCALE_STORAGE_KEY)!).view).toBe('enhanced');
+    });
+
+    it('volver a Original detiene el enhancer sin crear otro al volver a Mejorado', async () => {
+      const double = enhancerDouble();
+      const { fixture, element } = await render(info(), { webgpu: true, factory: double.factory });
+      choose(fixture, element, 'Mejorado');
+      await vi.waitFor(() => expect(double.enhancer.start).toHaveBeenCalledTimes(1));
+
+      choose(fixture, element, 'Original');
+      expect(double.enhancer.stop).toHaveBeenCalled();
+
+      choose(fixture, element, 'Comparar');
+      await vi.waitFor(() => expect(double.enhancer.start).toHaveBeenCalledTimes(2));
+      expect(double.factory).toHaveBeenCalledTimes(1);
+    });
+
+    it('recuerda la última vista y la usa al abrir otro video', async () => {
+      localStorage.setItem(RESCALE_STORAGE_KEY, JSON.stringify({ view: 'enhanced', kernel: 'bicubic' }));
+      const double = enhancerDouble();
+      const { fixture } = await render(info(), { webgpu: true, factory: double.factory });
+      settle(fixture);
+
+      await vi.waitFor(() => expect(double.enhancer.start).toHaveBeenCalled());
+      expect(double.enhancer.setParams).toHaveBeenCalledWith(expect.objectContaining({ kernel: 'bicubic', split: 0 }));
+    });
+
+    it('si la GPU falla vuelve a Original y avisa', async () => {
+      const double = enhancerDouble();
+      const { fixture, element } = await render(info(), { webgpu: true, factory: double.factory });
+      choose(fixture, element, 'Mejorado');
+      await vi.waitFor(() => expect(double.enhancer.start).toHaveBeenCalled());
+
+      double.events().onError?.('Se perdió el dispositivo.');
+      settle(fixture);
+
+      expect(element.querySelector('.notice.alert')!.textContent).toContain('Se perdió el dispositivo.');
+      expect(JSON.parse(localStorage.getItem(RESCALE_STORAGE_KEY)!).view).toBe('original');
+      expect(double.enhancer.stop).toHaveBeenCalled();
+    });
+
+    it('si no se puede crear el enhancer vuelve a Original y avisa', async () => {
+      const factory = vi.fn().mockRejectedValue(new Error('No hay adaptador de GPU.'));
+      const { fixture, element } = await render(info(), { webgpu: true, factory });
+      choose(fixture, element, 'Mejorado');
+
+      await vi.waitFor(() => {
+        settle(fixture);
+        expect(element.querySelector('.notice.alert')).not.toBeNull();
+      });
+      expect(element.querySelector('.notice.alert')!.textContent).toContain('No hay adaptador de GPU.');
+      expect(JSON.parse(localStorage.getItem(RESCALE_STORAGE_KEY)!).view).toBe('original');
     });
   });
 });
