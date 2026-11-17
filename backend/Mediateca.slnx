@@ -3,6 +3,7 @@
     <Project Path="src/Mediateca.Api/Mediateca.Api.csproj" />
     <Project Path="src/Mediateca.Core/Mediateca.Core.csproj" />
     <Project Path="src/Mediateca.Infrastructure/Mediateca.Infrastructure.csproj" />
+    <Project Path="src/Mediateca.Worker/Mediateca.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Mediateca.IntegrationTests/Mediateca.IntegrationTests.csproj" />

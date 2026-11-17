@@ -1,6 +1,6 @@
 import { Routes } from '@angular/router';
 
-import { authGuard, guestGuard, setupPendingGuard } from './core/auth/guards';
+import { adminGuard, authGuard, guestGuard, setupPendingGuard } from './core/auth/guards';
 
 export const routes: Routes = [
   {
@@ -16,10 +16,35 @@ export const routes: Routes = [
     loadComponent: () => import('./features/auth/login').then((m) => m.LoginPage),
   },
   {
+    // Todas las pantallas con sesión comparten la barra superior.
     path: '',
-    title: 'Mediateca',
     canActivate: [authGuard],
-    loadComponent: () => import('./features/home/home').then((m) => m.Home),
+    loadComponent: () => import('./shared/layout/app-layout').then((m) => m.AppLayout),
+    children: [
+      {
+        path: '',
+        title: 'Mediateca',
+        pathMatch: 'full',
+        loadComponent: () => import('./features/home/home').then((m) => m.Home),
+      },
+      {
+        path: 'bibliotecas/:id',
+        title: 'Biblioteca · Mediateca',
+        loadComponent: () => import('./features/library/library-page').then((m) => m.LibraryPage),
+      },
+      {
+        path: 'items/:id',
+        title: 'Detalle · Mediateca',
+        loadComponent: () => import('./features/item/item-page').then((m) => m.ItemPage),
+      },
+      {
+        path: 'admin/bibliotecas',
+        title: 'Administrar bibliotecas · Mediateca',
+        canActivate: [adminGuard],
+        loadComponent: () =>
+          import('./features/admin/admin-libraries').then((m) => m.AdminLibraries),
+      },
+    ],
   },
   { path: '**', redirectTo: '' },
 ];

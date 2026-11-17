@@ -43,8 +43,9 @@ Dónde vive cada cosa:
 | Autenticación | ASP.NET Core Identity con cookie |
 | Frontend | Angular 22 (última 22.x), Angular Material, zoneless y Vitest |
 | Música | TagLibSharp para leer etiquetas y carátulas |
+| Tareas programadas | Quartz.NET 4.7.3 en el worker (escaneo automático con expresiones cron) |
 | Pruebas | xUnit, Moq, Testcontainers (PostgreSQL) y WebApplicationFactory; Vitest en Angular |
-| Infraestructura | Docker Compose con tres contenedores (nginx con Angular, API y PostgreSQL) y GitHub Actions |
+| Infraestructura | Docker Compose con cuatro contenedores (nginx con Angular, API, worker y PostgreSQL) y GitHub Actions |
 
 Notas de versiones:
 
@@ -52,6 +53,7 @@ Notas de versiones:
 - Angular pasó a una versión mayor por año: la 22 (junio de 2026) es la vigente y la 23 está prevista para junio de 2027. Desde la 21, los proyectos nuevos son zoneless y usan Vitest para las pruebas.
 - EF Core 11 lanza un error si `MigrateAsync` no encuentra migraciones, así que la primera migración se genera antes de arrancar la API. Las APIs síncronas solo dejaron de funcionar en el proveedor de Cosmos DB; aun así, el proyecto usa siempre las asíncronas (`MigrateAsync`, `SaveChangesAsync`, `ToListAsync`).
 - EF Core 11: las colecciones primitivas (`List<string>` como `text[]`) se configuran con `PrimitiveCollection`, ya no con `Property`.
+- **Quartz.NET 4.7.3:** solo se instala el paquete `Quartz`. En la serie 4.x, `Quartz.Extensions.Hosting` y `Quartz.Extensions.DependencyInjection` son paquetes vacíos: `AddQuartz` y `AddQuartzHostedService` ya vienen en `Quartz`. En 4.x, `IJob.Execute` devuelve `ValueTask` y recibe un `CancellationToken`.
 - **Npgsql EF Core 11:** en la fase 0 confirma en NuGet si ya hay versión estable. Si todavía no, usa la última preliminar 11.0 y actualiza en cuanto salga la estable.
 
 ---
@@ -67,19 +69,25 @@ flowchart LR
     WEB["web: nginx con el build de Angular"]
     subgraph APIC["api: ASP.NET Core 11"]
       API[API REST]
-      SCAN[Escáner en segundo plano]
       META[Proveedores de metadatos]
+    end
+    subgraph WORKERC["worker: .NET 11 con Quartz"]
+      SCAN[Procesador de la cola de escaneos]
+      CRON[Escaneo automático programado]
     end
     DB[("db: PostgreSQL 18")]
   end
-  FS[["Carpetas de medios (/media)"]]
+  FS[["Carpetas de medios (/media, solo lectura)"]]
+  DATA[["Datos de la app (/data): pósters y carátulas"]]
   OMDB[(OMDb: datos de IMDb)]
   ANIDB[(AniDB)]
   UI -- "páginas, /api con cookie + XSRF, video/audio con Range" --> WEB
   WEB -- "/api" --> API
   API --> DB
+  SCAN -- "toma escaneos de la cola" --> DB
+  CRON -- "pone escaneos en la cola" --> DB
   SCAN --> FS
-  SCAN --> DB
+  SCAN --> DATA
   META --> OMDB
   META --> ANIDB
   META --> DB
@@ -87,10 +95,10 @@ flowchart LR
 
 Decisiones principales:
 
-- **Tres contenedores, un solo origen:** `web` (nginx) sirve el build de Angular y manda `/api` al contenedor `api`; `db` es PostgreSQL. El navegador solo habla con `web`, así que la app y la API comparten origen. En desarrollo, `ng serve` hace lo mismo con `proxy.conf.json`. nginx pasa `/api` sin búfer para que el streaming con `Range` llegue directo al navegador.
-- **Primer arranque con un comando:** `setup.ps1` (o `docker compose up -d --build --wait`) construye las imágenes y levanta todo; Compose espera a que cada contenedor esté sano antes de arrancar el siguiente (`db` → `api` → `web`).
+- **Cuatro contenedores, un solo origen:** `web` (nginx) sirve el build de Angular y manda `/api` al contenedor `api`; `worker` corre los escaneos (sección 7); `db` es PostgreSQL. El navegador solo habla con `web`, así que la app y la API comparten origen. En desarrollo, `ng serve` hace lo mismo con `proxy.conf.json`. nginx pasa `/api` sin búfer para que el streaming con `Range` llegue directo al navegador.
+- **Primer arranque con un comando:** `setup.ps1` (o `docker compose up -d --build --wait`) construye las imágenes y levanta todo; Compose espera a que cada contenedor esté sano antes de arrancar el siguiente (`db` → `api` → `web` y `worker`; el worker espera a la API porque es la API quien aplica las migraciones).
 - **Cookie en lugar de JWT:** las etiquetas `<video>` y `<audio>` no pueden enviar la cabecera `Authorization`, pero sí envían cookies. Con una cookie del mismo origen el streaming queda autenticado sin poner tokens en las URL.
-- **Escaneo y metadatos en segundo plano:** un `BackgroundService` lee una cola (`Channel<T>`) para que la API responda al instante mientras se escanea.
+- **Escaneo en un worker, con la base de datos como cola:** la API solo pone un `ScanJob` en estado `Queued` y responde al instante; el contenedor `worker` los toma y los corre (sección 7). Así un escaneo largo no compite con la API por memoria ni por CPU, y la cola sobrevive a un reinicio de la API.
 
 Estructura de carpetas:
 
@@ -99,15 +107,16 @@ JellifinClon/                          F:\Respaldo\Respaldo\Cursos\JellifinClon 
 ├── PLAN.md                            copia de este plan
 ├── README.md                          primer arranque, uso diario, configuración y desarrollo
 ├── setup.ps1                          primer arranque en Windows: crea .env y levanta los contenedores
-├── docker-compose.yml                 web, api y db
-├── .env.example                       contraseña, puertos y carpeta de medios (se copia a .env)
+├── docker-compose.yml                 web, api, worker y db
+├── .env.example                       contraseña, puertos, carpeta de medios, horario de escaneo y zona horaria (se copia a .env)
 ├── backend/
-│   ├── Dockerfile                     imagen de la API (SDK para compilar, ASP.NET Core para correr)
+│   ├── Dockerfile                     imágenes de la API y del worker (SDK para compilar, ASP.NET Core para correr)
 │   ├── Mediateca.slnx
 │   ├── src/
 │   │   ├── Mediateca.Api/             endpoints, autenticación y archivos de Angular
 │   │   ├── Mediateca.Core/            entidades, reglas, analizadores de nombres e interfaces
-│   │   └── Mediateca.Infrastructure/  EF Core, migraciones, escáner, OMDb, AniDB e imágenes
+│   │   ├── Mediateca.Infrastructure/  EF Core, migraciones, escáner, cola de escaneos, OMDb, AniDB e imágenes
+│   │   └── Mediateca.Worker/          escaneos de la cola, escaneo automático con Quartz y señal de vida
 │   └── tests/
 │       ├── Mediateca.UnitTests/
 │       └── Mediateca.IntegrationTests/  Testcontainers + WebApplicationFactory
@@ -142,7 +151,8 @@ erDiagram
 | `UserLibraryAccess` | UserId, LibraryId (llave compuesta) |
 | `UserItemData` | UserId, ItemId, PositionSeconds, Played, LastPlayedAt (llave compuesta) |
 | `MetadataCache` | Provider, ExternalId, Payload (`jsonb`), FetchedAt (llave compuesta Provider + ExternalId) |
-| `ScanJob` | Id, LibraryId, Status, StartedAt, FinishedAt, Added, Updated, Removed, Errors |
+| `ScanJob` | Id, LibraryId, Status (`Queued`, `Running`, `Completed`, `Failed`), CreatedAt, StartedAt, FinishedAt, Added, Updated, Removed, Errors, ErrorMessage. Es también la cola de escaneos |
+| `ScanSchedule` | Id (siempre 1), Enabled, CronExpression, UpdatedAt: el horario del escaneo automático |
 
 Detalles que vale la pena mostrar en el portafolio:
 
@@ -150,6 +160,7 @@ Detalles que vale la pena mostrar en el portafolio:
 - **Tipos de PostgreSQL:** `text[]` para las rutas de las bibliotecas y los géneros, y `jsonb` para la caché de metadatos.
 - **Búsqueda rápida:** la extensión `pg_trgm` con un índice GIN sobre `Title` acelera los `ILIKE '%texto%'` (`HasPostgresExtension("pg_trgm")` e índice con `gin_trgm_ops`).
 - **Índice único** en (LibraryId, FilePath) para que un archivo no se registre dos veces.
+- **Índice único parcial** en `ScanJob` (`IX_ScanJobs_LibraryId_Active`): sobre `LibraryId`, solo para los estados `Queued` y `Running`. La base de datos garantiza un escaneo activo por biblioteca, sin candados en la aplicación.
 
 ---
 
@@ -175,9 +186,38 @@ Detalles que vale la pena mostrar en el portafolio:
 ## 7. Escaneo de bibliotecas
 
 - En Docker, la carpeta de medios del equipo (`MEDIA_PATH` en `.env`) se monta de solo lectura en `/media`, y las bibliotecas apuntan a carpetas dentro de ella (por ejemplo, `/media/Peliculas`). Para agregar más carpetas se usa un `docker-compose.override.yml` local.
-- Se dispara con un botón en la administración (`POST /api/admin/libraries/{id}/scan`). El escaneo periódico cada N horas es opcional y configurable.
-- Un `BackgroundService` atiende una cola de escaneos, uno a la vez por biblioteca. `ScanJob` guarda el avance y Angular lo consulta cada 2 segundos; SignalR queda como extensión.
+- Las carpetas permitidas se configuran en `Storage:MediaRoots` (una lista; por omisión `/media`). La API rechaza cualquier carpeta de biblioteca fuera de esas raíces, y el selector de carpetas de la administración (`GET /api/admin/folders`) solo navega dentro de ellas. Fuera de Docker (por ejemplo, con `dotnet watch`) se define con user-secrets: `Storage:MediaRoots:0`.
+- Se dispara con un botón en la administración (`POST /api/admin/libraries/{id}/scan`, o `POST /api/admin/libraries/scan-all` para todas) y, de forma automática, con el horario de más abajo. En los dos casos solo se pone un `ScanJob` en la cola; quien escanea es el worker.
+- `ScanJob` guarda el avance y Angular lo consulta cada 2 segundos; SignalR queda como extensión. Si un escaneo sigue en cola después de 30 segundos, la pantalla avisa que quizá el worker no está corriendo.
 - **Incremental:** compara ruta, tamaño y fecha de modificación con lo guardado. Lo nuevo se crea, lo modificado se actualiza y lo que ya no existe se elimina. Los cambios se guardan en lotes.
+**Worker y cola en la base de datos**
+
+- **Solo el worker corre escaneos.** El contenedor `worker` (`Mediateca.Worker`) comparte la imagen base y el código de `Mediateca.Infrastructure` con la API. La API y el escaneo programado únicamente ponen escaneos en la cola.
+- **La cola es la tabla `ScanJobs`** (filas en `Queued`). El worker busca cada 3 segundos (`Scanning:QueuePollInterval`) y, mientras haya escaneos, los corre uno tras otro.
+- **Reclamo con actualización condicional:** toma el `Queued` más antiguo y lo pasa a `Running` con `UPDATE ... WHERE Id = x AND Status = 'Queued'` (`ExecuteUpdateAsync`). Si la actualización cambia una fila, ese escaneo es suyo; si cambia cero, otro procesador se lo ganó y vuelve a mirar. Es seguro aunque haya varios workers y no usa SQL a mano.
+- **Un escaneo activo por biblioteca:** el índice único parcial lo garantiza. Si dos solicitudes simultáneas intentan crear un escaneo de la misma biblioteca, la segunda recibe la violación de índice único y devuelve el escaneo que ya existe: las dos respuestas llevan el mismo id.
+- **Reinicios:** al arrancar, el worker marca como `Failed` los escaneos que estaban en `Running` (quedaron huérfanos) y deja intactos los que estaban en `Queued`. Si lo detienen a media corrida, el escaneo en curso queda como `Failed` con un mensaje en español.
+- Las migraciones las aplica solo la API. Compose inicia el worker cuando la API ya está sana, y su healthcheck revisa que el archivo `/tmp/mediateca-worker.alive` se haya actualizado en los últimos 2 minutos (el worker lo escribe cada 30 segundos).
+
+**Escaneo automático (Quartz)**
+
+- El horario es una sola fila de `ScanSchedules`. Mientras no exista, se usa `Scanning:DefaultCron` (`SCAN_CRON` en `.env`; por defecto `0 0 3 * * ?`, todos los días a las 3:00) y `Scanning:DefaultEnabled`.
+- El administrador lo cambia en **Administrar › Bibliotecas › Escaneo automático** (`GET` y `PUT /api/admin/scan-schedule`): un interruptor y una frecuencia (cada hora, cada 6 o 12 horas, diario, semanal o un cron propio). La pantalla muestra la zona horaria y las próximas 3 ejecuciones.
+- El worker revisa el horario cada 30 segundos (`Scanning:ScheduleSyncInterval`) con una tarea de Quartz; si cambió, quita el disparador anterior y programa el nuevo. Un cambio guardado en la administración se aplica en menos de un minuto, sin reiniciar nada.
+- En cada disparo, la tarea `ScheduledLibraryScanJob` pide el escaneo de todas las bibliotecas (las que ya tienen uno activo no se duplican).
+- **Zona horaria:** los horarios se interpretan en la zona del servidor, que en Docker sale de la variable `TZ` (por defecto `America/Mexico_City`; la imagen incluye `tzdata`).
+- **Formato cron de Quartz**, con segundos y seis campos (`segundo minuto hora día-del-mes mes día-de-la-semana`); el día del mes o el de la semana tiene que ser `?`:
+
+  | Cron | Cuándo |
+  |---|---|
+  | `0 0 * * * ?` | Cada hora |
+  | `0 0 */6 * * ?` | Cada 6 horas |
+  | `0 0 */12 * * ?` | Cada 12 horas |
+  | `0 0 3 * * ?` | Todos los días a las 3:00 |
+  | `0 0 3 ? * SUN` | Los domingos a las 3:00 |
+
+- **Intervalo mínimo de 5 minutos** (`Scanning:MinimumInterval`): la API rechaza con un 400 los horarios que disparan más seguido (se revisan las próximas ejecuciones, no solo las dos primeras).
+
 - Extensiones reconocidas: video `.mp4 .m4v .webm .mkv` y audio `.mp3 .m4a .aac .flac .ogg .opus .wav`.
 
 Convenciones de nombres:
@@ -250,8 +290,12 @@ API HTTP en XML con estas reglas obligatorias:
 | `GET/POST/PUT/DELETE /api/admin/users` | admin | Usuarios |
 | `PUT /api/admin/users/{id}/libraries` | admin | Bibliotecas permitidas para un usuario |
 | `GET/POST/PUT/DELETE /api/admin/libraries` | admin | Bibliotecas |
-| `POST /api/admin/libraries/{id}/scan` · `GET /api/admin/scans/{id}` | admin | Escanear y ver el avance |
+| `POST /api/admin/libraries/{id}/scan` · `GET /api/admin/scans/{id}` | admin | Poner un escaneo en la cola (202; si ya hay uno activo, devuelve ese) y ver el avance |
+| `POST /api/admin/libraries/scan-all` | admin | Poner en la cola un escaneo de cada biblioteca (202 con `{ "queued": n }`, los nuevos) |
+| `GET /api/admin/scan-schedule` · `PUT /api/admin/scan-schedule` | admin | Horario del escaneo automático (`{ enabled, cronExpression, timeZone, nextRuns, updatedAt }`); el `PUT` recibe `{ enabled, cronExpression }` y responde 400 con mensajes en español si el cron no es válido |
+| `GET /api/admin/folders?path=` | admin | Selector de carpetas: subcarpetas dentro de las raíces de medios (`Storage:MediaRoots`) |
 | `GET /api/libraries` | usuario | Bibliotecas visibles |
+| `GET /api/libraries/{id}/filters` | usuario | Géneros y años que existen en la biblioteca, para los filtros |
 | `GET /api/libraries/{id}/items?search=&genre=&year=&sort=&page=` | usuario | Cuadrícula con búsqueda, filtros y paginación |
 | `GET /api/items/{id}` · `GET /api/items/{id}/children` · `GET /api/items/{id}/image` | usuario | Detalle, temporadas, episodios o pistas, y póster |
 | `GET /api/items/{id}/stream` | usuario | Reproducción con `Range` |
@@ -275,7 +319,7 @@ Pantallas:
 | `/bibliotecas/:id` | Cuadrícula de pósters (o de álbumes, en música) con búsqueda, filtros por año y género, y orden |
 | `/items/:id` | Detalle con póster, título, año, clasificación, calificación, géneros y resumen; temporadas y episodios, o pistas del álbum; botones de reproducir y, para el admin, Identificar |
 | `/reproducir/:id` | Reproductor de video que pregunta si continuar donde te quedaste; botón de siguiente episodio |
-| `/admin/bibliotecas` | Alta, edición, escaneo y estado de las bibliotecas |
+| `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, y la sección "Escaneo automático" con el horario |
 | `/admin/usuarios` | Usuarios, contraseña y casillas de bibliotecas permitidas |
 
 Estructura y prácticas:
@@ -293,7 +337,7 @@ Estructura y prácticas:
 - Las llaves de Data Protection (cookies y antiforgery) se guardan en la base de datos (`PersistKeysToDbContext`), así las sesiones siguen válidas cuando se recrea el contenedor de la API.
 - Todo endpoint pide sesión por defecto (política de respaldo); los públicos (`/api/health`, setup, login y `me`) se marcan con `AllowAnonymous`.
 - El setup usa un candado de PostgreSQL (`pg_advisory_xact_lock`) dentro de la transacción: aunque lleguen dos solicitudes a la vez, solo se crea un administrador.
-- La API y PostgreSQL solo se publican en `127.0.0.1`; desde la red local solo se llega a `web`.
+- La API y PostgreSQL solo se publican en `127.0.0.1`; desde la red local solo se llega a `web`. El `worker` no publica ningún puerto: solo se conecta a la base de datos, lee `/media` (de solo lectura) y escribe en `/data`.
 - Límite de intentos de inicio de sesión con el middleware de rate limiting (por ejemplo, 5 por minuto por IP).
 - Autorización en todos los endpoints: política `Admin` para la administración y regla de visibilidad para elementos, imágenes y streams.
 - El cliente nunca manda rutas de archivos. Las carpetas de las bibliotecas se validan al crearlas y los streams se limitan a esas carpetas.
@@ -314,7 +358,7 @@ Estructura y prácticas:
   - un usuario sin acceso recibe 404 en el detalle, la imagen y el stream;
   - el stream responde 206 a una solicitud con `Range`.
 - **Frontend (Vitest):** sesión, guards, `PlayerService` y un par de componentes.
-- **CI (GitHub Actions):** compilar y probar el backend (los runners de Ubuntu traen Docker para Testcontainers), probar y compilar Angular, y una prueba de humo que levanta los tres contenedores y consulta `/api/health` a través de nginx.
+- **CI (GitHub Actions):** compilar y probar el backend (los runners de Ubuntu traen Docker para Testcontainers), probar y compilar Angular, y una prueba de humo que levanta los contenedores y consulta `/api/health` a través de nginx.
 
 ---
 
@@ -325,6 +369,13 @@ Estructura y prácticas:
 {
   "ConnectionStrings": { "Default": "Host=localhost;Port=5433;Database=mediateca;Username=mediateca" },
   "Storage": { "DataPath": "data" },
+  "Scanning": {
+    "DefaultCron": "0 0 3 * * ?",
+    "DefaultEnabled": true,
+    "QueuePollInterval": "00:00:03",
+    "ScheduleSyncInterval": "00:00:30",
+    "MinimumInterval": "00:05:00"
+  },
   "Metadata": {
     "Omdb":  { "ApiKey": "" },
     "AniDb": { "Client": "", "ClientVersion": 1 }
@@ -332,8 +383,9 @@ Estructura y prácticas:
 }
 ```
 
-- En Docker, todo sale de `.env` (contraseña de PostgreSQL, puertos, `MEDIA_PATH`, clave de OMDb y cliente de AniDB) y Compose lo pasa a la API como variables de entorno (`ConnectionStrings__Default`, `Metadata__Omdb__ApiKey`…). `.env.example` documenta cada variable y `.env` no se sube a git.
-- Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`.
+- En Docker, todo sale de `.env` (contraseña de PostgreSQL, puertos, `MEDIA_PATH`, `SCAN_CRON`, `TZ`, clave de OMDb y cliente de AniDB) y Compose lo pasa a la API y al worker como variables de entorno (`ConnectionStrings__Default`, `Scanning__DefaultCron`, `TZ`, `Metadata__Omdb__ApiKey`…).
+- Sección `Scanning`: `DefaultCron` y `DefaultEnabled` son el horario inicial (`SCAN_CRON` en `.env`) y solo cuentan mientras no haya uno guardado; después manda el de la administración. `QueuePollInterval`, `ScheduleSyncInterval` y `MinimumInterval` ajustan cada cuánto mira la cola el worker, cada cuánto revisa si cambió el horario y el mínimo entre dos escaneos automáticos. `TZ` es la zona horaria en la que se interpretan los horarios. `.env.example` documenta cada variable y `.env` no se sube a git.
+- Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`. El worker comparte el mismo `UserSecretsId`, así que los user-secrets (cadena de conexión, `Storage:DataPath` y `Storage:MediaRoots:0`) se definen una vez para los dos.
 - Antes de la fase 4, pide tu clave en <https://www.omdbapi.com/apikey.aspx> y registra tu cliente en AniDB (necesitas una cuenta).
 
 ---
@@ -366,12 +418,21 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 **Entregable:** con un PostgreSQL vacío, la app crea la base y pide al administrador.
 
 ### Fase 2. Bibliotecas y escaneo
-- [ ] Alta y edición de bibliotecas, con validación de carpetas.
-- [ ] Analizadores de nombres (películas, series y anime) y lector de etiquetas de música, con pruebas.
-- [ ] Escáner incremental en segundo plano y estado del escaneo.
-- [ ] Angular: administración de bibliotecas, inicio, cuadrícula con búsqueda y filtros, y detalle con temporadas, episodios, álbumes y pistas.
+- [x] Alta y edición de bibliotecas, con validación de carpetas.
+- [x] Analizadores de nombres (películas, series y anime) y lector de etiquetas de música, con pruebas.
+- [x] Escáner incremental en segundo plano y estado del escaneo.
+- [x] Angular: administración de bibliotecas, inicio, cuadrícula con búsqueda y filtros, y detalle con temporadas, episodios, álbumes y pistas.
 
 **Entregable:** al escanear, aparecen los títulos con los datos del nombre del archivo y de las etiquetas.
+
+### Fase 2b. Worker y escaneo automático
+- [ ] Proyecto `Mediateca.Worker` y cuarto contenedor `worker`: `Dockerfile` con los targets `api` y `worker`, Compose y healthcheck. Los escaneos salen de la API.
+- [ ] La cola de escaneos es la tabla `ScanJobs`: reclamo con actualización condicional e índice único parcial (un escaneo activo por biblioteca). Requiere generar la migración `WorkerYHorarioDeEscaneo`.
+- [ ] Escaneo automático con Quartz y horario editable (`ScanSchedule`, `GET` y `PUT /api/admin/scan-schedule`), aplicado por el worker en menos de un minuto; `SCAN_CRON` y `TZ` en `.env`.
+- [ ] Angular: sección "Escaneo automático", botón "Escanear todas" y aviso cuando un escaneo se queda en la cola.
+- [ ] Pruebas: reglas del horario (unitarias), endpoints del horario, escanear todas y solicitudes simultáneas (integración), y los componentes nuevos (Vitest).
+
+**Entregable:** el worker escanea solo con el horario elegido en la administración, y un escaneo pedido desde la API lo corre el worker.
 
 ### Fase 3. Usuarios y permisos
 - [ ] Administración de usuarios y de sus bibliotecas permitidas.

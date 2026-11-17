@@ -18,6 +18,7 @@ coverage/
 .env
 /data/
 /backend/src/Mediateca.Api/data/
+/backend/src/Mediateca.Worker/data/
 /media/
 *.db
 

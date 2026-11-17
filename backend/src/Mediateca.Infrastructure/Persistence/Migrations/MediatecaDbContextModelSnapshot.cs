@@ -17,7 +17,7 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
     // If you encounter a merge conflict in the line below, it means you need to
     // discard one of the migration branches and recreate its migrations on top of
     // the other branch. See https://aka.ms/efcore-docs-migrations-conflicts for more info.
-    public override string LastMigrationId => "20261117150800_Inicial";
+    public override string LastMigrationId => "20261117165848_WorkerYHorarioDeEscaneo";
 
     protected override void BuildModel(ModelBuilder modelBuilder)
     {
@@ -205,9 +205,35 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
 
                 b.HasKey("Id");
 
+                b.HasIndex("LibraryId")
+                    .IsUnique()
+                    .HasDatabaseName("IX_ScanJobs_LibraryId_Active")
+                    .HasFilter("\"Status\" IN ('Queued', 'Running')");
+
                 b.HasIndex("LibraryId", "CreatedAt");
 
                 b.ToTable("ScanJobs");
+            });
+
+        modelBuilder.Entity("Mediateca.Core.Scanning.ScanSchedule", b =>
+            {
+                b.Property<int>("Id")
+                    .HasColumnType("integer");
+
+                b.Property<string>("CronExpression")
+                    .IsRequired()
+                    .HasMaxLength(120)
+                    .HasColumnType("character varying(120)");
+
+                b.Property<bool>("Enabled")
+                    .HasColumnType("boolean");
+
+                b.Property<DateTimeOffset>("UpdatedAt")
+                    .HasColumnType("timestamp with time zone");
+
+                b.HasKey("Id");
+
+                b.ToTable("ScanSchedules");
             });
 
         modelBuilder.Entity("Mediateca.Core.Users.UserItemData", b =>

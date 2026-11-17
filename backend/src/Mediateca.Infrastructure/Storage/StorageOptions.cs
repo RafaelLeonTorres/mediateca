@@ -8,11 +8,29 @@ public sealed class StorageOptions
 {
     public const string Section = "Storage";
 
+    /// <summary>Carpeta de medios que se usa cuando la configuración no define ninguna (el montaje de Docker).</summary>
+    public const string DefaultMediaRoot = "/media";
+
     /// <summary>
-    /// Carpeta de datos de la app: pósters y volcado de títulos de AniDB. Si es relativa, se toma
-    /// desde la carpeta de la API. En Docker es /data (el volumen appdata).
+    /// Carpeta de datos de la app: pósters, carátulas y volcado de títulos de AniDB. Si es relativa,
+    /// se toma desde la carpeta de la API. En Docker es /data (el volumen appdata).
     /// </summary>
     public string DataPath { get; set; } = "data";
+
+    /// <summary>
+    /// Carpetas dentro de las que pueden estar las bibliotecas. Es un arreglo y no una lista porque el
+    /// enlazador de configuración agrega a lo que ya tenga la propiedad: así el valor por defecto
+    /// (/media) se aplica después, solo si la configuración no define ninguna. Para cambiarla fuera de
+    /// Docker: <c>Storage:MediaRoots:0</c>. Ya normalizadas (rutas completas, sin separador final).
+    /// </summary>
+    public string[] MediaRoots { get; set; } = [];
+
+    /// <summary>Carpeta de las imágenes que genera la app (carátulas extraídas de las etiquetas, pósters).</summary>
+    public string ImagesPath => Path.Combine(DataPath, "images");
+
+    /// <summary>Indica si la ruta está dentro de alguna carpeta de medios (o es una de ellas).</summary>
+    public bool IsInsideMediaRoots(string path) =>
+        MediaRoots.Any(root => MediaPaths.IsWithin(path, root));
 }
 
 public static class StorageExtensions

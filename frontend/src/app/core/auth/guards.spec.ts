@@ -9,17 +9,25 @@ import {
   provideRouter,
 } from '@angular/router';
 
-import { authGuard, guestGuard, setupPendingGuard } from './guards';
+import { adminGuard, authGuard, guestGuard, setupPendingGuard } from './guards';
 import { SessionStore } from './session-store';
 
 describe('guards', () => {
-  function configure(state: { needsSetup: boolean; loggedIn: boolean }) {
+  function configure(state: { needsSetup: boolean; loggedIn: boolean; isAdmin?: boolean }) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
         {
           provide: SessionStore,
-          useValue: { needsSetup: signal(state.needsSetup), isLoggedIn: signal(state.loggedIn) },
+          useValue: {
+            needsSetup: signal(state.needsSetup),
+            isLoggedIn: signal(state.loggedIn),
+            user: signal(
+              state.loggedIn
+                ? { id: '1', userName: 'u', displayName: 'U', isAdmin: !!state.isAdmin }
+                : null,
+            ),
+          },
         },
       ],
     });
@@ -58,5 +66,23 @@ describe('guards', () => {
     expect(run(authGuard)).toBe(true);
     expect(path(run(guestGuard))).toBe('/');
     expect(path(run(setupPendingGuard))).toBe('/');
+  });
+
+  it('la administración solo se abre para administradores', () => {
+    configure({ needsSetup: false, loggedIn: true, isAdmin: true });
+    expect(run(adminGuard, '/admin/bibliotecas')).toBe(true);
+  });
+
+  it('un usuario sin permisos de administrador vuelve al inicio', () => {
+    configure({ needsSetup: false, loggedIn: true, isAdmin: false });
+    expect(path(run(adminGuard, '/admin/bibliotecas'))).toBe('/');
+  });
+
+  it('sin sesión, la administración lleva a /login y recuerda a dónde volver', () => {
+    configure({ needsSetup: false, loggedIn: false });
+
+    const result = run(adminGuard, '/admin/bibliotecas') as UrlTree;
+    expect(path(result).startsWith('/login')).toBe(true);
+    expect(result.queryParams).toEqual({ volver: '/admin/bibliotecas' });
   });
 });

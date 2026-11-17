@@ -7,7 +7,7 @@
   2. Si no existe .env, lo crea a partir de .env.example con una contraseña aleatoria para PostgreSQL.
   3. Revisa los puertos de .env (web, api y db). Si alguno lo usa otro programa o Windows lo
      reservó (pasa con Hyper-V), usa el siguiente libre y lo guarda en .env.
-  4. Construye las imágenes, levanta los tres contenedores y espera a que estén sanos.
+  4. Construye las imágenes, levanta los cuatro contenedores y espera a que estén sanos.
   5. Muestra la dirección de la app.
 
 .EXAMPLE

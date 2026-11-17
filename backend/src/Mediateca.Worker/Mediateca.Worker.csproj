@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <!-- El worker: corre los escaneos de la cola y programa el escaneo automático con Quartz. -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- El mismo que la API: en desarrollo comparten los user-secrets (cadena de conexión y carpetas). -->
+    <UserSecretsId>08db58a3-c3cb-4ec7-a6df-084ede7ead15</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Mediateca.Infrastructure usa Identity y EF Core, que vienen del framework de ASP.NET Core. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mediateca.Infrastructure\Mediateca.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

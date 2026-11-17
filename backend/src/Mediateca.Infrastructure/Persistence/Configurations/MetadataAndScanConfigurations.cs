@@ -26,5 +26,23 @@ internal sealed class ScanJobConfiguration : IEntityTypeConfiguration<ScanJob>
         builder.Property(j => j.Status).HasConversion<string>().HasMaxLength(20);
         builder.HasOne<Library>().WithMany().HasForeignKey(j => j.LibraryId).OnDelete(DeleteBehavior.Cascade);
         builder.HasIndex(j => new { j.LibraryId, j.CreatedAt });
+
+        // Un solo escaneo activo por biblioteca, garantizado por la base de datos: si dos solicitudes
+        // intentan crear uno a la vez, la segunda falla con una violación de índice único.
+        builder.HasIndex(j => j.LibraryId)
+            .IsUnique()
+            .HasFilter("\"Status\" IN ('Queued', 'Running')")
+            .HasDatabaseName("IX_ScanJobs_LibraryId_Active");
+    }
+}
+
+internal sealed class ScanScheduleConfiguration : IEntityTypeConfiguration<ScanSchedule>
+{
+    public void Configure(EntityTypeBuilder<ScanSchedule> builder)
+    {
+        builder.ToTable("ScanSchedules");
+        // Una sola fila con Id = 1: el id lo pone la app, no la base de datos.
+        builder.Property(s => s.Id).ValueGeneratedNever();
+        builder.Property(s => s.CronExpression).HasMaxLength(120);
     }
 }

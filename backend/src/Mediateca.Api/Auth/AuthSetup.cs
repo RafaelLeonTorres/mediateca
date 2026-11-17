@@ -3,12 +3,28 @@ using Mediateca.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 
 namespace Mediateca.Api.Auth;
 
+/// <summary>Límite de intentos de inicio de sesión por IP (sección "Auth:LoginRateLimit").</summary>
+public sealed class LoginRateLimitOptions
+{
+    public const string Section = "Auth:LoginRateLimit";
+
+    /// <summary>Intentos permitidos por IP en cada ventana.</summary>
+    public int PermitLimit { get; set; } = 5;
+
+    /// <summary>Duración de la ventana.</summary>
+    public TimeSpan Window { get; set; } = TimeSpan.FromMinutes(1);
+}
+
 public static class AuthSetup
 {
-    /// <summary>Política de límite para el inicio de sesión: 5 intentos por minuto por IP.</summary>
+    /// <summary>
+    /// Política de límite para el inicio de sesión: por defecto 5 intentos por minuto por IP
+    /// (<see cref="LoginRateLimitOptions"/>).
+    /// </summary>
     public const string LoginRateLimit = "login";
 
     /// <summary>Política de autorización para la administración.</summary>
@@ -56,12 +72,17 @@ public static class AuthSetup
             options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
         });
 
+        services.AddOptions<LoginRateLimitOptions>().BindConfiguration(LoginRateLimitOptions.Section);
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            options.AddPolicy(LoginRateLimit, context => RateLimitPartition.GetFixedWindowLimiter(
-                context.Connection.RemoteIpAddress?.ToString() ?? "desconocida",
-                _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1) }));
+            options.AddPolicy(LoginRateLimit, context =>
+            {
+                var limit = context.RequestServices.GetRequiredService<IOptions<LoginRateLimitOptions>>().Value;
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    context.Connection.RemoteIpAddress?.ToString() ?? "desconocida",
+                    _ => new FixedWindowRateLimiterOptions { PermitLimit = limit.PermitLimit, Window = limit.Window });
+            });
         });
 
         return services;

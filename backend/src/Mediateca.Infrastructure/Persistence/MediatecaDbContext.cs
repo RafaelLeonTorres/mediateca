@@ -30,6 +30,8 @@ public sealed class MediatecaDbContext(DbContextOptions<MediatecaDbContext> opti
 
     public DbSet<ScanJob> ScanJobs => Set<ScanJob>();
 
+    public DbSet<ScanSchedule> ScanSchedules => Set<ScanSchedule>();
+
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder builder)

@@ -43,7 +43,10 @@ public abstract class MediaItem
 
     public int? AniDbId { get; set; }
 
-    /// <summary>Ruta del póster dentro de la carpeta de datos de la app.</summary>
+    /// <summary>
+    /// Ruta completa de la imagen: una imagen junto a los medios (poster.jpg, folder.jpg…) o un archivo de
+    /// la carpeta de datos de la app (carátula extraída, o póster descargado). Nunca sale al cliente.
+    /// </summary>
     public string? PosterPath { get; set; }
 
     public DateTimeOffset DateAdded { get; set; }

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- EF Core con PostgreSQL, Identity y, en las siguientes fases, escáner y proveedores de metadatos. -->
+  <!-- EF Core con PostgreSQL, Identity, escáner de bibliotecas y, en las siguientes fases, proveedores de metadatos. -->
   <PropertyGroup>
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -21,6 +21,9 @@
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="11.0.0" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="11.0.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="11.0.0-rc.3" />
+    <!-- Expresiones cron y programación de tareas del worker. En 4.x los paquetes Quartz.Extensions.* son
+         cascarones vacíos: la integración con Microsoft.Extensions.Hosting viene en este mismo paquete. -->
+    <PackageReference Include="Quartz" Version="4.7.3" />
     <PackageReference Include="TagLibSharp" Version="2.3.0" />
   </ItemGroup>
 

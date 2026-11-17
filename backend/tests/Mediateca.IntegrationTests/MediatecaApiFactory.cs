@@ -1,19 +1,28 @@
+using Mediateca.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
 namespace Mediateca.IntegrationTests;
 
 /// <summary>
-/// Levanta la API contra un PostgreSQL vacío y desechable (Testcontainers; necesita Docker).
-/// Cada clase de pruebas tiene el suyo, así no comparten datos.
+/// Levanta la API contra un PostgreSQL vacío y desechable (Testcontainers; necesita Docker), con el
+/// procesador de escaneos del worker dentro del mismo proceso. Cada clase de pruebas tiene el suyo,
+/// así no comparten datos.
 /// </summary>
 public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18").Build();
     private readonly string _dataPath = Path.Combine(Path.GetTempPath(), $"mediateca-pruebas-{Guid.NewGuid():N}");
+    private readonly string _mediaPath = Path.Combine(Path.GetTempPath(), $"mediateca-medios-{Guid.NewGuid():N}");
+
+    public MediatecaApiFactory() => Directory.CreateDirectory(_mediaPath);
+
+    /// <summary>Carpeta de medios de la prueba (<c>Storage:MediaRoots</c>): las bibliotecas tienen que quedar dentro de ella.</summary>
+    public string MediaPath => _mediaPath;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -29,7 +38,19 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
             {
                 ["ConnectionStrings:Default"] = connectionString.ConnectionString,
                 ["Storage:DataPath"] = _dataPath,
+                ["Storage:MediaRoots:0"] = _mediaPath,
+                // Las pruebas inician sesión muchas veces desde la misma IP: con el límite real
+                // (5 por minuto) la mayoría recibiría 429.
+                ["Auth:LoginRateLimit:PermitLimit"] = "1000",
+                // Sin el SQL de cada consulta en la salida de las pruebas.
+                ["Logging:LogLevel:Microsoft.EntityFrameworkCore"] = "Warning",
+                // El procesador de escaneos de las pruebas mira la cola cada 200 ms y no cada 3 s.
+                ["Scanning:QueuePollInterval"] = "00:00:00.200",
             }));
+
+        // En producción los escaneos los corre el worker, un proceso aparte. Las pruebas registran el
+        // mismo procesador dentro de la API de prueba, así no necesitan un segundo proceso.
+        builder.ConfigureServices(services => services.AddScanProcessing());
     }
 
     public Task InitializeAsync() => _postgres.StartAsync();
@@ -38,9 +59,12 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
     {
         await base.DisposeAsync();
         await _postgres.DisposeAsync();
-        if (Directory.Exists(_dataPath))
+        foreach (var folder in new[] { _dataPath, _mediaPath })
         {
-            Directory.Delete(_dataPath, recursive: true);
+            if (Directory.Exists(folder))
+            {
+                Directory.Delete(folder, recursive: true);
+            }
         }
     }
 }

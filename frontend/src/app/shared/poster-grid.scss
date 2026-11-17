@@ -1,0 +1,16 @@
+// Cuadrícula responsiva de pósters 2:3: tantas columnas como quepan, desde 140 px de ancho.
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 24px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (max-width: 480px) {
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 16px 12px;
+  }
+}

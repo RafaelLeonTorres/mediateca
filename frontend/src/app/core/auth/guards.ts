@@ -24,6 +24,19 @@ export const authGuard: CanActivateFn = (_route, state) => {
   return router.createUrlTree(['/login'], { queryParams });
 };
 
+/**
+ * Pantallas de administración. Quien no es administrador vuelve al inicio; sin sesión se comporta
+ * como authGuard.
+ */
+export const adminGuard: CanActivateFn = (route, state) => {
+  const session = inject(SessionStore);
+  const result = authGuard(route, state);
+  if (result !== true) {
+    return result;
+  }
+  return session.user()?.isAdmin ? true : inject(Router).createUrlTree(['/']);
+};
+
 /** /login solo tiene sentido sin sesión. */
 export const guestGuard: CanActivateFn = () => {
   const session = inject(SessionStore);

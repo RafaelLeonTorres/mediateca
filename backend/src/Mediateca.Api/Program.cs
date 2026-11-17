@@ -1,4 +1,7 @@
+using System.Text.Json.Serialization;
 using Mediateca.Api.Auth;
+using Mediateca.Api.Items;
+using Mediateca.Api.Libraries;
 using Mediateca.Api.Setup;
 using Mediateca.Infrastructure;
 using Mediateca.Infrastructure.Persistence;
@@ -10,6 +13,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
+// Los enums viajan como texto ("Movies", "Completed"…) en las respuestas y en los cuerpos de las solicitudes.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddMediatecaAuth();
 
@@ -44,6 +50,10 @@ app.MapGet("/api/health", () => TypedResults.Ok(new HealthResponse("ok", DateTim
 
 app.MapSetupEndpoints();
 app.MapAuthEndpoints();
+app.MapAdminLibraryEndpoints();
+app.MapAdminScanScheduleEndpoints();
+app.MapLibraryEndpoints();
+app.MapItemEndpoints();
 
 await app.RunAsync();
 
