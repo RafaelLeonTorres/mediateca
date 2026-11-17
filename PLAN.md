@@ -8,7 +8,7 @@ Dónde vive cada cosa:
 
 - **Este plan:** `C:\Users\rafik\Downloads\Claude\ProyectosPortafolio\JellyfinClon\PLAN.md`. En la fase 0 se copia a la raíz del repositorio.
 - **Código:** `F:\Respaldo\Respaldo\Cursos\JellifinClon`.
-- **Repositorio:** uno nuevo y público en tu GitHub (`RafaelLeonTorres/<nombre>`), creado en la fase 0.
+- **Repositorio:** <https://github.com/RafaelLeonTorres/mediateca> (público), creado en la fase 0.
 
 ---
 
@@ -50,7 +50,8 @@ Notas de versiones:
 
 - .NET 11 salió el 10 de noviembre de 2026. Es STS y tiene soporte hasta noviembre de 2028, igual que .NET 10.
 - Angular pasó a una versión mayor por año: la 22 (junio de 2026) es la vigente y la 23 está prevista para junio de 2027. Desde la 21, los proyectos nuevos son zoneless y usan Vitest para las pruebas.
-- EF Core 11 lanza un error ante cualquier API síncrona de entrada/salida, así que todo el acceso a datos debe ser `async` (`MigrateAsync`, `SaveChangesAsync`, `ToListAsync`).
+- EF Core 11 lanza un error si `MigrateAsync` no encuentra migraciones, así que la primera migración se genera antes de arrancar la API. Las APIs síncronas solo dejaron de funcionar en el proveedor de Cosmos DB; aun así, el proyecto usa siempre las asíncronas (`MigrateAsync`, `SaveChangesAsync`, `ToListAsync`).
+- EF Core 11: las colecciones primitivas (`List<string>` como `text[]`) se configuran con `PrimitiveCollection`, ya no con `Property`.
 - **Npgsql EF Core 11:** en la fase 0 confirma en NuGet si ya hay versión estable. Si todavía no, usa la última preliminar 11.0 y actualiza en cuanto salga la estable.
 
 ---
@@ -156,7 +157,7 @@ Detalles que vale la pena mostrar en el portafolio:
 
 1. Al iniciar, la API ejecuta `await db.Database.MigrateAsync()`. Si la base no existe, Npgsql la crea y aplica todas las migraciones; si ya existe, solo aplica las pendientes. El usuario de PostgreSQL necesita permiso `CREATEDB`.
 2. Los roles `Admin` y `Usuario` se siembran con `UseAsyncSeeding` de EF Core.
-3. Se crea la carpeta de datos de la app (`data/`; en Docker, el volumen `appdata` montado en `/data`) para los pósters, las llaves de Data Protection y el volcado de títulos de AniDB.
+3. Se crea la carpeta de datos de la app (`data/`; en Docker, el volumen `appdata` montado en `/data`) para los pósters y el volcado de títulos de AniDB.
 4. `GET /api/setup/status` responde `{ "needsSetup": true }` mientras no haya usuarios. Angular manda entonces a `/setup`, donde se crea el administrador con `POST /api/setup`. Ese endpoint solo funciona mientras no exista ningún usuario; después responde 404.
 
 ---
@@ -289,7 +290,9 @@ Estructura y prácticas:
 ## 12. Seguridad
 
 - Contraseñas con el hash de Identity. Cookie `HttpOnly` y `SameSite=Lax`, marcada `Secure` cuando la app se sirve por HTTPS (en la red local se usa HTTP), más antiforgery de ASP.NET Core con la cabecera `X-XSRF-TOKEN`.
-- Las llaves de Data Protection (cookies y antiforgery) se guardan en la carpeta de datos, así las sesiones siguen válidas cuando se recrea el contenedor de la API.
+- Las llaves de Data Protection (cookies y antiforgery) se guardan en la base de datos (`PersistKeysToDbContext`), así las sesiones siguen válidas cuando se recrea el contenedor de la API.
+- Todo endpoint pide sesión por defecto (política de respaldo); los públicos (`/api/health`, setup, login y `me`) se marcan con `AllowAnonymous`.
+- El setup usa un candado de PostgreSQL (`pg_advisory_xact_lock`) dentro de la transacción: aunque lleguen dos solicitudes a la vez, solo se crea un administrador.
 - La API y PostgreSQL solo se publican en `127.0.0.1`; desde la red local solo se llega a `web`.
 - Límite de intentos de inicio de sesión con el middleware de rate limiting (por ejemplo, 5 por minuto por IP).
 - Autorización en todos los endpoints: política `Admin` para la administración y regla de visibilidad para elementos, imágenes y streams.
@@ -348,17 +351,17 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 - [x] Docker Compose con tres contenedores: `web` (nginx con Angular y proxy de `/api`), `api` y `db` (PostgreSQL 18), con healthchecks, volúmenes y puertos configurables en `.env`.
 - [x] `setup.ps1` y README con el primer arranque: un comando crea `.env`, revisa que los puertos estén libres (si alguno está ocupado o Windows lo reservó, usa el siguiente y lo guarda en `.env`), construye las imágenes y deja todo corriendo.
 - [x] GitHub Actions que compile y pruebe el backend y el frontend, y levante los tres contenedores.
-- [ ] Cuando todo el esqueleto corra en los contenedores: iniciar git, hacer el primer commit y crear el repositorio público en tu GitHub. Lo más sencillo es *Publicar en GitHub* desde el panel de control de código fuente de VS Code. Si lo creas en github.com, hazlo sin README ni licencia para que no choquen con los archivos locales.
+- [x] Cuando todo el esqueleto corrió en los contenedores: primer commit, commit de la CI y repositorio público en GitHub.
 - [ ] Trabajar con ramas y pull requests, como en el sitio, para que el workflow valide cada cambio antes de llegar a `main`.
 
 **Entregable:** con `setup.ps1` (o `docker compose up -d --build --wait`) quedan corriendo `web`, `api` y `db`, y <http://localhost:8080> muestra que la API responde.
 
 ### Fase 1. Primer arranque y sesión
-- [ ] Entidades, `DbContext` y primera migración.
-- [ ] `MigrateAsync` al iniciar y roles sembrados con `UseAsyncSeeding`.
-- [ ] Endpoints de setup, login, logout y `me` con cookie y XSRF.
-- [ ] Angular: asistente de configuración, login y guards.
-- [ ] Pruebas: una base nueva se crea sola y el setup funciona una sola vez.
+- [x] Entidades, `DbContext` y primera migración.
+- [x] `MigrateAsync` al iniciar y roles sembrados con `UseAsyncSeeding`.
+- [x] Endpoints de setup, login, logout y `me` con cookie y XSRF.
+- [x] Angular: asistente de configuración, login y guards.
+- [x] Pruebas: una base nueva se crea sola y el setup funciona una sola vez, aunque lleguen dos solicitudes a la vez.
 
 **Entregable:** con un PostgreSQL vacío, la app crea la base y pide al administrador.
 

@@ -1,38 +1,41 @@
-import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { Router, provideRouter } from '@angular/router';
 
+import { SessionStore, type User } from '../../core/auth/session-store';
 import { Home } from './home';
 
+/** Deja terminar las promesas pendientes (el clic espera el logout y luego navega). */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve));
+
 describe('Home', () => {
-  beforeEach(() => {
+  const admin: User = { id: '1', userName: 'admin', displayName: 'Rafael', isAdmin: true };
+
+  function render(user: User) {
+    const logout = vi.fn().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       imports: [Home],
-      providers: [provideHttpClient(), provideHttpClientTesting()],
+      providers: [provideRouter([]), { provide: SessionStore, useValue: { user: signal(user), logout } }],
     });
+    const fixture = TestBed.createComponent(Home);
+    fixture.detectChanges();
+    return { element: fixture.nativeElement as HTMLElement, logout };
+  }
+
+  it('saluda con el nombre del usuario', () => {
+    const { element } = render(admin);
+
+    expect(element.textContent).toContain('Hola, Rafael');
   });
 
-  it('indica cuando la API responde', async () => {
-    const fixture = TestBed.createComponent(Home);
-    const http = TestBed.inject(HttpTestingController);
+  it('cierra la sesión y lleva a /login', async () => {
+    const { element, logout } = render(admin);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
 
-    http.expectOne('/api/health').flush({ status: 'ok', time: new Date().toISOString() });
-    await fixture.whenStable();
-    fixture.detectChanges();
+    element.querySelector('button')!.click();
+    await settle();
 
-    expect(fixture.nativeElement.textContent).toContain('La API responde correctamente');
-    http.verify();
-  });
-
-  it('avisa cuando la API no está disponible', async () => {
-    const fixture = TestBed.createComponent(Home);
-    const http = TestBed.inject(HttpTestingController);
-
-    http.expectOne('/api/health').flush('caída', { status: 503, statusText: 'Service Unavailable' });
-    await fixture.whenStable();
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).toContain('No hay conexión con la API');
-    http.verify();
+    expect(logout).toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith('/login');
   });
 });

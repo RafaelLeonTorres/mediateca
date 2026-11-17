@@ -2,7 +2,7 @@
 
 Gestor de contenido multimedia: organiza y reproduce tu colección de música, películas, series y anime desde el navegador. Proyecto de portafolio con .NET 11, EF Core 11 (Code First), PostgreSQL 18 y Angular 22, que corre en Docker.
 
-> En construcción: fase 0 (estructura base). El plan completo, con las fases y los criterios de aceptación, está en [PLAN.md](PLAN.md).
+> En construcción: fase 1 (primer arranque e inicio de sesión). El plan completo, con las fases y los criterios de aceptación, está en [PLAN.md](PLAN.md).
 
 ## Cómo está armado
 
@@ -29,7 +29,7 @@ Solo necesitas [Docker Desktop](https://www.docker.com/products/docker-desktop/)
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
    ```
 
-3. Abre <http://localhost:8080>. La página debe decir "La API responde correctamente".
+3. Abre <http://localhost:8080>. La primera vez, la app te pide crear la cuenta de administrador.
 
 El script:
 
@@ -47,7 +47,13 @@ sed -i.bak "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" 
 docker compose up -d --build --wait
 ```
 
-Abre <http://localhost:8080>.
+Abre <http://localhost:8080> y crea la cuenta de administrador.
+
+### Qué pasa en el primer arranque
+
+1. La API crea la base de datos `mediateca` y sus tablas con las migraciones de EF Core. Si ya existe, solo aplica las migraciones pendientes.
+2. Siembra los roles `Admin` y `Usuario`.
+3. Mientras no haya usuarios, la app muestra el asistente que crea al administrador. Después, ese asistente ya no aparece y la app pide iniciar sesión.
 
 ### Si algo falla
 
@@ -107,6 +113,14 @@ dotnet watch --project backend/src/Mediateca.Api
 
 La API queda en <http://localhost:5080> y su documentación en <http://localhost:5080/scalar>. Para volver a la API en Docker: `docker compose start api`.
 
+**Cambios en la base de datos.** Las entidades están en `Mediateca.Core` y su configuración en `Mediateca.Infrastructure/Persistence`. Después de cambiarlas, crea una migración; la API la aplica sola al arrancar:
+
+```powershell
+cd backend
+dotnet tool restore
+dotnet ef migrations add NombreDelCambio --project src/Mediateca.Infrastructure --startup-project src/Mediateca.Api --output-dir Persistence/Migrations
+```
+
 ## Pruebas
 
 ```powershell
@@ -114,7 +128,7 @@ dotnet test backend
 cd frontend; npm ci; npx ng test --watch=false
 ```
 
-GitHub Actions corre estas pruebas en cada pull request y, además, levanta los tres contenedores y consulta `/api/health` a través de nginx.
+Las pruebas de integración levantan su propio PostgreSQL con Testcontainers, así que necesitan Docker abierto. GitHub Actions corre estas pruebas en cada pull request y, además, levanta los tres contenedores y consulta `/api/health` a través de nginx.
 
 ## Estructura
 

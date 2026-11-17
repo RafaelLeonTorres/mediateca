@@ -1,0 +1,53 @@
+// Pantallas de acceso (primer arranque e inicio de sesión): un panel centrado.
+.page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.panel {
+  width: min(100%, 420px);
+  padding: 32px;
+  box-sizing: border-box;
+  border-radius: var(--mat-sys-corner-extra-large);
+  background: var(--mat-sys-surface-container);
+}
+
+.brand {
+  margin: 0 0 24px;
+  font: var(--mat-sys-title-medium);
+  color: var(--mat-sys-primary);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font: var(--mat-sys-headline-small);
+}
+
+.intro {
+  margin: 0 0 24px;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remember {
+  margin: 0 0 12px -8px;
+}
+
+.error {
+  margin: 0 0 12px;
+  color: var(--mat-sys-error);
+}
+
+@media (max-width: 480px) {
+  .panel {
+    padding: 24px 16px;
+  }
+}

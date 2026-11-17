@@ -1,61 +1,110 @@
-import { HttpClient } from '@angular/common/http';
-import { Component, inject } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
-import { catchError, map, of } from 'rxjs';
+import { Component, inject, signal } from '@angular/core';
+import { MatButton } from '@angular/material/button';
+import { MatToolbar } from '@angular/material/toolbar';
+import { Router } from '@angular/router';
 
-interface Health {
-  status: string;
-  time: string;
-}
+import { SessionStore } from '../../core/auth/session-store';
 
-/** Inicio provisional (fase 0): confirma que Angular llega a la API a través del proxy. */
+/** Inicio. En la fase 2 muestra las bibliotecas; por ahora, el saludo y el estado vacío. */
 @Component({
   selector: 'app-home',
+  imports: [MatButton, MatToolbar],
   template: `
-    <main class="home">
-      <h1>Mediateca</h1>
-      <p>Gestor de contenido multimedia.</p>
-      @switch (estado()) {
-        @case ('ok') {
-          <p class="estado ok">La API responde correctamente.</p>
+    <mat-toolbar class="bar">
+      <span class="brand">Mediateca</span>
+      <span class="spacer"></span>
+      <span class="user">{{ session.user()?.displayName }}</span>
+      <button matButton="text" type="button" (click)="logout()" [disabled]="loggingOut()">
+        Cerrar sesión
+      </button>
+    </mat-toolbar>
+
+    <main class="content">
+      <h1>Hola, {{ session.user()?.displayName }}</h1>
+
+      <section class="empty" aria-labelledby="empty-title">
+        <h2 id="empty-title">Todavía no hay bibliotecas</h2>
+        @if (session.user()?.isAdmin) {
+          <p>
+            Pronto vas a poder agregar tus carpetas de música, películas, series y anime desde la
+            administración.
+          </p>
+        } @else {
+          <p>Cuando el administrador te dé acceso a una biblioteca, va a aparecer aquí.</p>
         }
-        @case ('error') {
-          <p class="estado error">No hay conexión con la API. Revisa que esté corriendo en http://localhost:5080.</p>
-        }
-        @default {
-          <p class="estado">Revisando la API…</p>
-        }
-      }
+      </section>
     </main>
   `,
   styles: `
-    .home {
-      max-width: 40rem;
-      margin: 4rem auto;
-      padding: 0 1.5rem;
-      font-family: system-ui, sans-serif;
+    .bar {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--mat-sys-surface-container);
     }
-    .estado {
-      padding: 0.75rem 1rem;
-      border-radius: 0.5rem;
-      background: #f1f1f4;
+
+    .brand {
+      font: var(--mat-sys-title-large);
+      color: var(--mat-sys-primary);
     }
-    .ok {
-      background: #e6f4ea;
+
+    .spacer {
+      flex: 1;
     }
-    .error {
-      background: #fce8e6;
+
+    .user {
+      margin-right: 8px;
+      font: var(--mat-sys-body-medium);
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    .content {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    h1 {
+      margin: 0 0 24px;
+      font: var(--mat-sys-headline-medium);
+    }
+
+    .empty {
+      padding: 32px;
+      border-radius: var(--mat-sys-corner-large);
+      background: var(--mat-sys-surface-container-low);
+    }
+
+    .empty h2 {
+      margin: 0 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+
+    .empty p {
+      margin: 0;
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    @media (max-width: 480px) {
+      .user {
+        display: none;
+      }
     }
   `,
 })
 export class Home {
-  private readonly http = inject(HttpClient);
+  protected readonly session = inject(SessionStore);
+  private readonly router = inject(Router);
 
-  protected readonly estado = toSignal(
-    this.http.get<Health>('/api/health').pipe(
-      map((health) => (health.status === 'ok' ? 'ok' : 'error')),
-      catchError(() => of('error')),
-    ),
-    { initialValue: 'cargando' },
-  );
+  protected readonly loggingOut = signal(false);
+
+  protected async logout(): Promise<void> {
+    this.loggingOut.set(true);
+    try {
+      await this.session.logout();
+      await this.router.navigateByUrl('/login');
+    } finally {
+      this.loggingOut.set(false);
+    }
+  }
 }
