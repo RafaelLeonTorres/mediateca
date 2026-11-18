@@ -90,5 +90,28 @@ public class SubtitleLabelsTests
     }
 
     [Fact]
+    public void Las_subidas_lo_dicen_y_sin_idioma_se_llaman_como_su_archivo()
+    {
+        Assert.Equal(
+            new[] { "Español", "Español (subido)", "Inglés (forzados, subido)", "Mi archivo (subido)", "Pista 5 (subido)" },
+            Labels(
+                Track("e1", "es"),
+                Track("u1", "es", origin: SubtitleOrigin.Uploaded),
+                Track("u2", "en", forced: true, origin: SubtitleOrigin.Uploaded),
+                Track("u3", null, title: "Mi archivo", origin: SubtitleOrigin.Uploaded),
+                Track("u4", null, origin: SubtitleOrigin.Uploaded)));
+    }
+
+    [Fact]
+    public void Dos_subidas_del_mismo_idioma_se_distinguen_por_su_archivo()
+    {
+        Assert.Equal(
+            new[] { "Español (subido) – Episodio 01", "Español (subido) – Episodio 01 v2" },
+            Labels(
+                Track("u1", "es", title: "Episodio 01", origin: SubtitleOrigin.Uploaded),
+                Track("u2", "es", title: "Episodio 01 v2", origin: SubtitleOrigin.Uploaded)));
+    }
+
+    [Fact]
     public void Una_lista_vacia_da_una_lista_vacia() => Assert.Empty(SubtitleLabels.Assign([]));
 }

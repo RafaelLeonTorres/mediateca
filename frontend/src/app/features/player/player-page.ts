@@ -21,6 +21,7 @@ import { PlayerService } from '../../core/playback/player-service';
 import {
   SUBTITLES_OFF,
   SubtitlesApi,
+  type SubtitleTrack,
   pickInitialTrack,
   pickToggleTrack,
 } from '../../core/playback/subtitles-api';
@@ -71,7 +72,8 @@ export const CONTROLS_HIDE_MS = 3000;
  *
  * Los controles son propios (la barra nativa quedaría tapada por el lienzo): se ocultan solos a los 3 s sin mover
  * el ratón. Con "Reescalar" el video pasa por la GPU (WebGPU); empieza en Original, sin trabajo de GPU. Los
- * subtítulos se dibujan en una capa HTML encima de todo, así se ven con o sin reescalado.
+ * subtítulos se dibujan en una capa HTML encima de todo, así se ven con o sin reescalado. El botón CC siempre está:
+ * también sirve para subir un archivo de subtítulos cuando el video no trae.
  *
  * Atajos: espacio o K (reproducir y pausar), flechas (±10 s), M (silencio), C (subtítulos) y F (pantalla completa).
  */
@@ -275,9 +277,12 @@ export const CONTROLS_HIDE_MS = 3000;
               (focusout)="onBarFocusOut($event)"
             >
               <app-subtitle-menu
+                [itemId]="id()"
                 [tracks]="tracks()"
                 [activeId]="activeTrackId()"
                 (choose)="chooseSubtitle($event)"
+                (added)="onSubtitleAdded($event)"
+                (removed)="onSubtitleRemoved($event)"
                 (openChange)="subtitleMenuOpen.set($event)"
               />
               <app-rescale-panel
@@ -551,6 +556,10 @@ export class PlayerPage {
   private binderVideo: HTMLVideoElement | undefined;
   /** Última pista que el usuario eligió en este video: la que vuelve a encender la tecla C. */
   private lastTrackId: string | null = null;
+  /** El episodio cuya pista inicial ya se eligió: subir o borrar un archivo no la vuelve a elegir. */
+  private tracksPickedFor: string | null = null;
+  /** La pista que se acaba de subir: se activa en cuanto aparece en la lista. */
+  private pendingTrackId: string | null = null;
 
   constructor() {
     // La música y el video no suenan a la vez.
@@ -573,13 +582,11 @@ export class PlayerPage {
     });
 
     // Al conocer las pistas de un episodio se activa la que corresponde (idioma recordado, forzada o predeterminada).
+    // Después, la lista solo cambia por un archivo subido o borrado.
     effect(() => {
       const tracks = this.tracks();
-      untracked(() => {
-        const pick = pickInitialTrack(tracks, readSubtitlePreference());
-        this.lastTrackId = pick?.id ?? null;
-        this.activeTrackId.set(pick?.id ?? null);
-      });
+      const loaded = this.subtitleList.hasValue();
+      untracked(() => this.onTracks(tracks, loaded));
     });
 
     // La pista activa se carga en el <video> como <track> oculto.
@@ -890,6 +897,49 @@ export class PlayerPage {
     writeSubtitlePreference(this.tracks().find((track) => track.id === id)?.language ?? null);
   }
 
+  /** Se subió un archivo: se vuelve a pedir la lista (las etiquetas pueden cambiar) y se activa la pista nueva. */
+  protected onSubtitleAdded(track: SubtitleTrack): void {
+    this.pendingTrackId = track.id;
+    this.subtitleList.reload();
+  }
+
+  /** Se borró una pista subida: si era la activa se apagan, sin cambiar el idioma recordado para otros episodios. */
+  protected onSubtitleRemoved(trackId: string): void {
+    if (this.activeTrackId() === trackId) {
+      this.activeTrackId.set(null);
+    }
+    if (this.lastTrackId === trackId) {
+      this.lastTrackId = null;
+    }
+    this.subtitleList.reload();
+  }
+
+  private onTracks(tracks: readonly SubtitleTrack[], loaded: boolean): void {
+    const id = this.id();
+    if (this.tracksPickedFor !== id) {
+      if (!loaded) {
+        // Todavía no llega la lista de este episodio: nada de la pista del anterior.
+        this.activeTrackId.set(null);
+        return;
+      }
+      this.tracksPickedFor = id;
+      const pick = pickInitialTrack(tracks, readSubtitlePreference());
+      this.lastTrackId = pick?.id ?? null;
+      this.activeTrackId.set(pick?.id ?? null);
+      return;
+    }
+    const pending = this.pendingTrackId;
+    if (pending && tracks.some((track) => track.id === pending)) {
+      this.pendingTrackId = null;
+      this.chooseSubtitle(pending);
+      return;
+    }
+    const active = this.activeTrackId();
+    if (loaded && active && !tracks.some((track) => track.id === active)) {
+      this.activeTrackId.set(null);
+    }
+  }
+
   /** La tecla C: quita los subtítulos o vuelve a poner la última pista (o la del idioma recordado). */
   protected toggleSubtitles(): void {
     const tracks = this.tracks();
@@ -1037,6 +1087,7 @@ export class PlayerPage {
     this.duration.set(0);
     this.controlsShown.set(true);
     this.rescaleError.set(null);
+    this.pendingTrackId = null;
   }
 
   private clearTimers(): void {

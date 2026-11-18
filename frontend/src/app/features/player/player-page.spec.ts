@@ -66,6 +66,7 @@ describe('PlayerPage', () => {
       isDefault: false,
       isForced: false,
       url: '/api/items/e2/subtitles/e2.vtt',
+      canDelete: false,
       ...extra,
     };
   }
@@ -587,12 +588,80 @@ describe('PlayerPage', () => {
       url: '/api/items/e2/subtitles/x0.vtt',
     });
 
-    it('sin pistas no aparece el botón CC y la tecla C no hace nada', async () => {
-      const { element } = await render();
+    const uploaded = subtitle({
+      id: 'u1',
+      label: 'Inglés (subido)',
+      language: 'en',
+      source: 'uploaded',
+      canDelete: true,
+      url: '/api/items/e2/subtitles/u1.vtt',
+    });
+    const ccLabel = (element: HTMLElement) =>
+      query(element, 'app-subtitle-menu button').getAttribute('aria-label');
 
-      expect(element.querySelector('app-subtitle-menu button')).toBeNull();
+    /** La respuesta llega, corren los efectos (pista elegida, <track>) y se pinta. */
+    async function afterResponse(fixture: { detectChanges(): void; whenStable(): Promise<unknown> }) {
+      await new Promise<void>((resolve) => setTimeout(resolve));
+      TestBed.tick();
+      await fixture.whenStable();
+      settle(fixture);
+    }
+
+    it('sin pistas el botón CC sigue a la vista y la tecla C no hace nada', async () => {
+      const { fixture, element } = await render();
+      settle(fixture);
+
+      expect(ccLabel(element)).toBe('Subtítulos: desactivados');
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c' }));
+      settle(fixture);
       expect(element.querySelector('video track')).toBeNull();
+    });
+
+    it('al subir un archivo vuelve a pedir la lista y activa la pista nueva', async () => {
+      const { fixture, http, element, video } = await render(info(), { tracks: [spanish] });
+      settle(fixture);
+      query<HTMLButtonElement>(element, 'app-subtitle-menu button').click();
+      fixture.detectChanges();
+      const input = query<HTMLInputElement>(element, 'app-subtitle-menu input[type="file"]');
+      const file = new File(['1\n00:00:01,000 --> 00:00:02,000\nHola\n'], 'Mi episodio.en.srt');
+      Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      input.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+
+      query(element, 'app-subtitle-menu form').dispatchEvent(new Event('submit', { cancelable: true }));
+      const upload = http.expectOne(
+        (request) => request.method === 'POST' && request.url === '/api/items/e2/subtitles',
+      );
+      expect(upload.request.params.get('language')).toBe('en');
+      upload.flush(uploaded);
+      TestBed.tick();
+      http.expectOne('/api/items/e2/subtitles').flush([spanish, uploaded]);
+      await afterResponse(fixture);
+
+      expect(ccLabel(element)).toBe('Subtítulos: Inglés (subido)');
+      expect(video.querySelector('track')!.getAttribute('src')).toBe('/api/items/e2/subtitles/u1.vtt');
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('en');
+    });
+
+    it('al borrar la pista subida que estaba activa se apagan, sin cambiar el idioma recordado', async () => {
+      localStorage.setItem(SUBTITLE_STORAGE_KEY, 'en');
+      const { fixture, http, element, video } = await render(info(), { tracks: [spanish, uploaded] });
+      settle(fixture);
+      expect(ccLabel(element)).toBe('Subtítulos: Inglés (subido)');
+
+      query<HTMLButtonElement>(element, 'app-subtitle-menu button').click();
+      fixture.detectChanges();
+      buttonWithText(element, 'Borrar el archivo subido')!.click();
+      const request = http.expectOne('/api/items/e2/subtitles/u1');
+      expect(request.request.method).toBe('DELETE');
+      request.flush(null, noContent);
+      TestBed.tick();
+      http.expectOne('/api/items/e2/subtitles').flush([spanish]);
+      await afterResponse(fixture);
+
+      expect(ccLabel(element)).toBe('Subtítulos: desactivados');
+      expect(video.querySelector('track')).toBeNull();
+      expect(localStorage.getItem(SUBTITLE_STORAGE_KEY)).toBe('en');
     });
 
     it('por omisión están desactivados aunque haya pistas', async () => {

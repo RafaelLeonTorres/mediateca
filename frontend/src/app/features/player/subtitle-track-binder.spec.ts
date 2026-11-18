@@ -11,6 +11,7 @@ describe('SubtitleTrackBinder', () => {
     isDefault: false,
     isForced: false,
     url: '/api/items/v1/subtitles/e2.vtt',
+    canDelete: false,
   };
 
   /** Una pista de texto de mentira: jsdom no implementa `HTMLTrackElement.track`. */

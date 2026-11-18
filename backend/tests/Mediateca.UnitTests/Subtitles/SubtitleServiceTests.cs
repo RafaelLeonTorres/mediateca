@@ -89,7 +89,7 @@ public sealed class SubtitleServiceTests : IDisposable
             .Callback<ProcessRequest, CancellationToken>((r, _) => request = r)
             .ReturnsAsync(Ok(ProbeJson));
 
-        var tracks = await CreateService().ListAsync(video, CancellationToken.None);
+        var tracks = await CreateService().ListAsync(Guid.NewGuid(), video, CancellationToken.None);
 
         Assert.Equal(new[] { "e2", "e3" }, tracks.Select(t => t.Id).ToArray());
         Assert.Equal(new[] { "Inglés", "Español" }, tracks.Select(t => t.Label).ToArray());
@@ -110,7 +110,7 @@ public sealed class SubtitleServiceTests : IDisposable
             .ReturnsAsync(Ok(Vtt));
         var service = CreateService(new MediaToolsOptions { Ffprobe = "/opt/ff/ffprobe", Ffmpeg = "/opt/ff/ffmpeg" });
 
-        Assert.Equal(2, (await service.ListAsync(video, CancellationToken.None)).Count);
+        Assert.Equal(2, (await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None)).Count);
         Assert.Equal(SubtitleStatus.Ok, (await service.GetVttAsync(Guid.NewGuid(), video, "e2", CancellationToken.None)).Status);
     }
 
@@ -123,8 +123,8 @@ public sealed class SubtitleServiceTests : IDisposable
         Probe(ProcessResult.NotInstalled);
         var service = CreateService();
 
-        var withExternal = await service.ListAsync(first, CancellationToken.None);
-        var withoutAnything = await service.ListAsync(second, CancellationToken.None);
+        var withExternal = await service.ListAsync(Guid.NewGuid(), first, CancellationToken.None);
+        var withoutAnything = await service.ListAsync(Guid.NewGuid(), second, CancellationToken.None);
 
         Assert.Equal("Español", Assert.Single(withExternal).Label);
         Assert.Empty(withoutAnything);
@@ -139,13 +139,13 @@ public sealed class SubtitleServiceTests : IDisposable
         Probe(Ok(ProbeJson));
         var service = CreateService();
 
-        await service.ListAsync(video, CancellationToken.None);
-        await service.ListAsync(video, CancellationToken.None);
+        await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None);
+        await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None);
         Assert.Equal(1, Calls("ffprobe"));
 
         // Si el archivo cambia (otra fecha de modificación), se vuelve a sondear.
         File.SetLastWriteTimeUtc(video, DateTime.UtcNow.AddMinutes(-5));
-        await service.ListAsync(video, CancellationToken.None);
+        await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None);
         Assert.Equal(2, Calls("ffprobe"));
     }
 
@@ -155,13 +155,13 @@ public sealed class SubtitleServiceTests : IDisposable
         var video = CreateVideo();
         Probe(Ok("""{ "streams": [] }"""));
         var service = CreateService();
-        Assert.Empty(await service.ListAsync(video, CancellationToken.None));
+        Assert.Empty(await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None));
 
         WriteFile("01.es.srt", "1\n00:00:01,000 --> 00:00:02,000\nHola\n");
         // La fecha de la carpeta tiene la resolución del reloj del sistema: se mueve para que sea distinta.
         Directory.SetLastWriteTimeUtc(_media, DateTime.UtcNow.AddMinutes(1));
 
-        Assert.Single(await service.ListAsync(video, CancellationToken.None));
+        Assert.Single(await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None));
     }
 
     [Fact]
@@ -170,7 +170,7 @@ public sealed class SubtitleServiceTests : IDisposable
         var video = CreateVideo();
         Probe(Failed());
 
-        var tracks = await CreateService().ListAsync(video, CancellationToken.None);
+        var tracks = await CreateService().ListAsync(Guid.NewGuid(), video, CancellationToken.None);
 
         Assert.Empty(tracks);
         Assert.Contains(_logger.Messages, m => m.Level == LogLevel.Warning && m.Text.Contains("ffprobe"));
@@ -181,10 +181,10 @@ public sealed class SubtitleServiceTests : IDisposable
     {
         var service = CreateService();
 
-        Assert.Empty(await service.ListAsync(Path.Combine(_media, "no-existe.mp4"), CancellationToken.None));
+        Assert.Empty(await service.ListAsync(Guid.NewGuid(), Path.Combine(_media, "no-existe.mp4"), CancellationToken.None));
         var audio = Path.Combine(_media, "pista.mp3");
         File.WriteAllBytes(audio, []);
-        Assert.Empty(await service.ListAsync(audio, CancellationToken.None));
+        Assert.Empty(await service.ListAsync(Guid.NewGuid(), audio, CancellationToken.None));
         Assert.Equal(0, Calls("ffprobe"));
     }
 
@@ -347,7 +347,7 @@ public sealed class SubtitleServiceTests : IDisposable
         WriteFile("01.txt", "no es un subtítulo");
         Probe(Ok("""{ "streams": [] }"""));
 
-        var tracks = await CreateService().ListAsync(video, CancellationToken.None);
+        var tracks = await CreateService().ListAsync(Guid.NewGuid(), video, CancellationToken.None);
 
         Assert.Equal(new[] { "x0", "x1", "x2" }, tracks.Select(t => t.Id).ToArray());
         Assert.Equal(new[] { "Inglés", "Español", "Español (forzados)" }, tracks.Select(t => t.Label).ToArray());
@@ -419,7 +419,7 @@ public sealed class SubtitleServiceTests : IDisposable
 
         var service = CreateService();
 
-        Assert.Empty(await service.ListAsync(video, CancellationToken.None));
+        Assert.Empty(await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None));
         Assert.Equal(SubtitleStatus.NotFound, (await service.GetVttAsync(Guid.NewGuid(), video, "x0", CancellationToken.None)).Status);
     }
 
@@ -434,7 +434,195 @@ public sealed class SubtitleServiceTests : IDisposable
 
         Probe(Ok("""{ "streams": [] }"""));
 
-        Assert.Empty(await CreateService().ListAsync(video, CancellationToken.None));
+        Assert.Empty(await CreateService().ListAsync(Guid.NewGuid(), video, CancellationToken.None));
+    }
+
+    // ───────────────────────── subidos desde el reproductor ─────────────────────────
+
+    private const string Srt = "1\r\n00:00:01,500 --> 00:00:03,000\r\nHola, mundo\r\n";
+
+    private static byte[] Bytes(string text) => System.Text.Encoding.UTF8.GetBytes(text);
+
+    [Fact]
+    public async Task Un_srt_subido_se_guarda_en_WebVTT_y_se_lista_al_final_como_subido()
+    {
+        var video = CreateVideo();
+        WriteFile("01.es.srt", Srt);
+        Probe(Ok(ProbeJson));
+        var service = CreateService();
+        var itemId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var upload = await service.UploadAsync(itemId, video, userId, "Mi episodio.en.srt", Bytes(Srt), null, null, CancellationToken.None);
+
+        Assert.Equal(SubtitleUploadStatus.Ok, upload.Status);
+        var track = upload.Track!;
+        Assert.Matches("^u[0-9a-f]{32}$", track.Id);
+        Assert.Equal(SubtitleOrigin.Uploaded, track.Origin);
+        Assert.Equal("en", track.Language);
+        Assert.Equal("Mi episodio", track.Title);
+        Assert.Equal("subrip", track.Codec);
+        Assert.Equal(userId, track.UploadedBy);
+        Assert.Equal("Inglés (subido)", track.Label);
+
+        // Va después de las incrustadas y de los sueltos, y solo en este video.
+        var tracks = await service.ListAsync(itemId, video, CancellationToken.None);
+        Assert.Equal(new[] { "e2", "e3", "x0", track.Id }, tracks.Select(t => t.Id).ToArray());
+        Assert.Equal(new[] { "Inglés", "Español (incrustados)", "Español (archivo)", "Inglés (subido)" }, tracks.Select(t => t.Label).ToArray());
+        Assert.DoesNotContain(await service.ListAsync(Guid.NewGuid(), video, CancellationToken.None), t => t.Origin == SubtitleOrigin.Uploaded);
+
+        // Se guarda fuera de la caché de extracciones y se sirve sin volver a convertir.
+        Assert.StartsWith(Path.Combine(_data, "uploads", "subtitles", itemId.ToString()), track.FilePath);
+        var vtt = await service.GetVttAsync(itemId, video, track.Id, CancellationToken.None);
+        Assert.Equal(SubtitleStatus.Ok, vtt.Status);
+        Assert.Equal("WEBVTT\n\n00:00:01.500 --> 00:00:03.000\nHola, mundo\n\n", vtt.Content);
+    }
+
+    [Theory]
+    [InlineData("Episodio 01.es.forced.srt", null, "es", true)]
+    [InlineData("Episodio 01.es.srt", "en", "en", false)]
+    [InlineData("Episodio 01.es.srt", "", null, false)]
+    [InlineData("Episodio 01.srt", "Español", "es", false)]
+    [InlineData("Episodio 01.srt", "ru", "ru", false)]
+    [InlineData("Episodio 01.srt", "<script>", null, false)]
+    [InlineData("Ataque.de.Titanes.srt", null, null, false)]
+    public async Task El_idioma_sale_del_nombre_si_no_se_elige(string archivo, string? elegido, string? idioma, bool forzados)
+    {
+        var video = CreateVideo();
+        Probe(Ok("""{ "streams": [] }"""));
+
+        var upload = await CreateService().UploadAsync(
+            Guid.NewGuid(), video, Guid.NewGuid(), archivo, Bytes(Srt), elegido, null, CancellationToken.None);
+
+        Assert.Equal(SubtitleUploadStatus.Ok, upload.Status);
+        Assert.Equal(idioma, upload.Track!.Language);
+        Assert.Equal(forzados, upload.Track.IsForced);
+    }
+
+    [Fact]
+    public async Task Sin_idioma_la_pista_subida_se_llama_como_su_archivo()
+    {
+        var video = CreateVideo();
+        Probe(Ok("""{ "streams": [] }"""));
+
+        var upload = await CreateService().UploadAsync(
+            Guid.NewGuid(), video, Guid.NewGuid(), "C:\\fakepath\\Yani Neko 01.srt", Bytes(Srt), string.Empty, null, CancellationToken.None);
+
+        Assert.Equal("Yani Neko 01 (subido)", upload.Track!.Label);
+    }
+
+    [Fact]
+    public async Task Un_ass_subido_pasa_por_ffmpeg_y_si_no_esta_por_el_convertidor_de_CSharp()
+    {
+        const string Ass = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Del ASS\n";
+        var video = CreateVideo();
+        Probe(Ok("""{ "streams": [] }"""));
+        ProcessRequest? request = null;
+        _processes.Setup(p => p.RunAsync(It.Is<ProcessRequest>(r => r.FileName == "ffmpeg"), It.IsAny<CancellationToken>()))
+            .Callback<ProcessRequest, CancellationToken>((r, _) => request = r)
+            .ReturnsAsync(Ok(Vtt));
+        var service = CreateService();
+        var itemId = Guid.NewGuid();
+
+        var withFfmpeg = await service.UploadAsync(itemId, video, Guid.NewGuid(), "01.ja.ass", Bytes(Ass), null, null, CancellationToken.None);
+
+        Assert.Equal(SubtitleUploadStatus.Ok, withFfmpeg.Status);
+        Assert.Equal(Vtt, (await service.GetVttAsync(itemId, video, withFfmpeg.Track!.Id, CancellationToken.None)).Content);
+        // ffmpeg leyó una copia temporal, que ya no existe.
+        var input = request!.Arguments[request.Arguments.ToList().IndexOf("-i") + 1];
+        Assert.EndsWith(".ass", input);
+        Assert.False(File.Exists(input));
+
+        Ffmpeg(ProcessResult.NotInstalled);
+        var withoutFfmpeg = await service.UploadAsync(itemId, video, Guid.NewGuid(), "01.ja.ass", Bytes(Ass), null, null, CancellationToken.None);
+
+        Assert.Equal(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nDel ASS\n\n",
+            (await service.GetVttAsync(itemId, video, withoutFfmpeg.Track!.Id, CancellationToken.None)).Content);
+    }
+
+    [Theory]
+    [InlineData("foto.jpg", "1\n00:00:01,000 --> 00:00:02,000\nHola\n")]
+    [InlineData("01.srt", "esto no es un subtítulo")]
+    [InlineData("01.vtt", "00:00:01.000 --> 00:00:02.000\nSin cabecera\n")]
+    [InlineData("01.srt", "")]
+    [InlineData("", "1\n00:00:01,000 --> 00:00:02,000\nHola\n")]
+    public async Task Rechaza_lo_que_no_es_un_subtitulo_y_no_guarda_nada(string archivo, string contenido)
+    {
+        var video = CreateVideo();
+        var service = CreateService();
+
+        var upload = await service.UploadAsync(Guid.NewGuid(), video, Guid.NewGuid(), archivo, Bytes(contenido), null, null, CancellationToken.None);
+
+        Assert.Equal(SubtitleUploadStatus.Invalid, upload.Status);
+        Assert.False(string.IsNullOrWhiteSpace(upload.Error));
+        Assert.False(Directory.Exists(service.UploadsFolder) && Directory.EnumerateFiles(service.UploadsFolder, "*", SearchOption.AllDirectories).Any());
+    }
+
+    [Fact]
+    public async Task Rechaza_lo_que_pesa_demasiado_y_lo_que_no_es_un_video()
+    {
+        var video = CreateVideo();
+        var audio = CreateVideo("01.mp3");
+        var service = CreateService();
+        var tooBig = new byte[SubtitleService.MaxUploadBytes + 1];
+
+        Assert.Equal(
+            SubtitleUploadStatus.TooLarge,
+            (await service.UploadAsync(Guid.NewGuid(), video, Guid.NewGuid(), "01.srt", tooBig, null, null, CancellationToken.None)).Status);
+        Assert.Equal(
+            SubtitleUploadStatus.NotVideo,
+            (await service.UploadAsync(Guid.NewGuid(), audio, Guid.NewGuid(), "01.srt", Bytes(Srt), null, null, CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task No_pasa_del_limite_de_subidos_por_video()
+    {
+        var video = CreateVideo();
+        Probe(Ok("""{ "streams": [] }"""));
+        var service = CreateService();
+        var itemId = Guid.NewGuid();
+        for (var i = 0; i < SubtitleService.MaxUploadsPerItem; i++)
+        {
+            Assert.Equal(
+                SubtitleUploadStatus.Ok,
+                (await service.UploadAsync(itemId, video, Guid.NewGuid(), $"{i}.srt", Bytes(Srt), null, null, CancellationToken.None)).Status);
+        }
+
+        var extra = await service.UploadAsync(itemId, video, Guid.NewGuid(), "otro.srt", Bytes(Srt), null, null, CancellationToken.None);
+        var elsewhere = await service.UploadAsync(Guid.NewGuid(), video, Guid.NewGuid(), "otro.srt", Bytes(Srt), null, null, CancellationToken.None);
+
+        Assert.Equal(SubtitleUploadStatus.TooMany, extra.Status);
+        Assert.Equal(SubtitleUploadStatus.Ok, elsewhere.Status);
+        Assert.Equal(SubtitleService.MaxUploadsPerItem, (await service.ListAsync(itemId, video, CancellationToken.None)).Count);
+    }
+
+    [Fact]
+    public async Task Solo_quien_lo_subio_o_un_administrador_lo_borra()
+    {
+        var video = CreateVideo();
+        WriteFile("01.es.srt", Srt);
+        Probe(Ok("""{ "streams": [] }"""));
+        var service = CreateService();
+        var itemId = Guid.NewGuid();
+        var owner = Guid.NewGuid();
+        var first = (await service.UploadAsync(itemId, video, owner, "a.srt", Bytes(Srt), "es", null, CancellationToken.None)).Track!;
+        var second = (await service.UploadAsync(itemId, video, owner, "b.srt", Bytes(Srt), "es", null, CancellationToken.None)).Track!;
+
+        Assert.Equal(SubtitleDeleteStatus.Forbidden, await service.DeleteUploadAsync(itemId, first.Id, Guid.NewGuid(), false, CancellationToken.None));
+        Assert.Equal(SubtitleDeleteStatus.Deleted, await service.DeleteUploadAsync(itemId, first.Id, owner, false, CancellationToken.None));
+        Assert.Equal(SubtitleDeleteStatus.Deleted, await service.DeleteUploadAsync(itemId, second.Id, Guid.NewGuid(), true, CancellationToken.None));
+
+        // Ya no están, y las pistas del archivo no se borran desde aquí.
+        foreach (var trackId in new[] { first.Id, second.Id, "x0", "e2", "u", "U" + new string('a', 32), "../../x" })
+        {
+            Assert.Equal(SubtitleDeleteStatus.NotFound, await service.DeleteUploadAsync(itemId, trackId, owner, true, CancellationToken.None));
+        }
+
+        Assert.Equal(new[] { "x0" }, (await service.ListAsync(itemId, video, CancellationToken.None)).Select(t => t.Id).ToArray());
+        Assert.Equal(SubtitleStatus.NotFound, (await service.GetVttAsync(itemId, video, first.Id, CancellationToken.None)).Status);
+        Assert.False(Directory.Exists(Path.Combine(service.UploadsFolder, itemId.ToString())));
+        Assert.True(File.Exists(Path.Combine(_media, "01.es.srt")));
     }
 
     /// <summary>Guarda lo que se escribe en el log para poder revisarlo.</summary>

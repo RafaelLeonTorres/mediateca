@@ -2,9 +2,10 @@ namespace Mediateca.Core.Subtitles;
 
 /// <summary>
 /// Pone la etiqueta en español de cada pista: "Español", "Inglés (forzados)", "Pista 3" si no trae idioma.
-/// Si dos pistas quedan con la misma etiqueta las distingue, en este orden: por su título ("Inglés – SDH"),
-/// por su origen ("Español (incrustados)" y "Español (archivo)") y, si todavía son iguales, con un número
-/// ("Inglés", "Inglés (2)").
+/// Las subidas desde el reproductor siempre lo dicen ("Español (subido)") y, sin idioma, se llaman como su
+/// archivo. Si dos pistas quedan con la misma etiqueta las distingue, en este orden: por su título
+/// ("Inglés – SDH"), por su origen ("Español (incrustados)" y "Español (archivo)") y, si todavía son iguales,
+/// con un número ("Inglés", "Inglés (2)").
 /// </summary>
 public static class SubtitleLabels
 {
@@ -37,7 +38,7 @@ public static class SubtitleLabels
             {
                 foreach (var i in group)
                 {
-                    labels[i] = $"{labels[i]} ({(tracks[i].Origin == SubtitleOrigin.Embedded ? "incrustados" : "archivo")})";
+                    labels[i] = $"{labels[i]} ({OriginName(tracks[i].Origin)})";
                 }
             }
         }
@@ -60,9 +61,32 @@ public static class SubtitleLabels
 
     private static string BaseLabel(SubtitleTrack track, int index)
     {
-        var name = track.Language is { Length: > 0 } language ? SubtitleLanguages.NameOf(language) : $"Pista {index + 1}";
-        return track.IsForced ? $"{name} (forzados)" : name;
+        var uploaded = track.Origin == SubtitleOrigin.Uploaded;
+        var name = track.Language is { Length: > 0 } language
+            ? SubtitleLanguages.NameOf(language)
+            : uploaded && !string.IsNullOrWhiteSpace(track.Title) ? track.Title.Trim() : $"Pista {index + 1}";
+
+        // "Español (forzados)", "Español (subido)" o las dos cosas juntas: "Español (forzados, subido)".
+        var notes = new List<string>(2);
+        if (track.IsForced)
+        {
+            notes.Add("forzados");
+        }
+
+        if (uploaded)
+        {
+            notes.Add("subido");
+        }
+
+        return notes.Count == 0 ? name : $"{name} ({string.Join(", ", notes)})";
     }
+
+    private static string OriginName(SubtitleOrigin origin) => origin switch
+    {
+        SubtitleOrigin.Embedded => "incrustados",
+        SubtitleOrigin.External => "archivo",
+        _ => "subido",
+    };
 
     /// <summary>Posiciones que comparten etiqueta, en grupos de dos o más, en orden.</summary>
     private static List<List<int>> DuplicateGroups(string[] labels) =>

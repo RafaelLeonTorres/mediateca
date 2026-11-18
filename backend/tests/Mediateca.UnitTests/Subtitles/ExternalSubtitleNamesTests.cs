@@ -95,6 +95,23 @@ public class ExternalSubtitleNamesTests
         Assert.Equal(esperado, ExternalSubtitleNames.IsSubtitleFile(archivo));
 
     [Theory]
+    [InlineData("Episodio 01.es.srt", "es", false, "Episodio 01")]
+    [InlineData("Show.S01E01.en.forced.ass", "en", true, "Show.S01E01")]
+    [InlineData("capitulo.forced.spa.vtt", "es", true, "capitulo")]
+    [InlineData("Medalist.Lat.srt", "es", false, "Medalist")]
+    [InlineData("Ataque.de.Titanes.srt", null, false, "Ataque.de.Titanes")]
+    [InlineData("[Grupo] Yani Neko - 01 (720p).srt", null, false, "[Grupo] Yani Neko - 01 (720p)")]
+    [InlineData("es.srt", null, false, "es")]
+    public void Adivina_lo_de_un_archivo_subido_por_los_segmentos_del_final(string archivo, string? idioma, bool forzado, string titulo)
+    {
+        var name = ExternalSubtitleNames.Guess(archivo);
+
+        Assert.Equal(idioma, name.Language);
+        Assert.Equal(forzado, name.IsForced);
+        Assert.Equal(titulo, name.Title);
+    }
+
+    [Theory]
     [InlineData("a.srt", "subrip")]
     [InlineData("a.vtt", "webvtt")]
     [InlineData("a.ass", "ass")]

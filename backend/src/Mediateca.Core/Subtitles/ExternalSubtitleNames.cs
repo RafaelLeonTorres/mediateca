@@ -86,4 +86,44 @@ public static class ExternalSubtitleNames
 
         return new ExternalSubtitleName(language, forced, isDefault, leftovers.Count == 0 ? null : string.Join(' ', leftovers));
     }
+
+    /// <summary>
+    /// Lo que dice el nombre de un archivo subido, que no tiene por qué llamarse como el video: el idioma y las
+    /// marcas se leen de los segmentos del final, de atrás hacia adelante, hasta el primero que no es una
+    /// ("Episodio 01.es.srt", "capitulo.spa.forced.ass"). Así "Ataque.de.Titanes.srt" no queda en alemán. El
+    /// título es el resto del nombre, sin la extensión.
+    /// </summary>
+    public static ExternalSubtitleName Guess(string fileName)
+    {
+        var stem = Path.GetFileNameWithoutExtension(Path.GetFileName(fileName)).Trim();
+        var segments = stem.Split('.').ToList();
+        string? language = null;
+        var forced = false;
+        var isDefault = false;
+        while (segments.Count > 1)
+        {
+            var segment = segments[^1].Trim();
+            if (ForcedWords.Contains(segment))
+            {
+                forced = true;
+            }
+            else if (string.Equals(segment, "default", StringComparison.OrdinalIgnoreCase))
+            {
+                isDefault = true;
+            }
+            else if (language is null && SubtitleLanguages.TryGetKnown(segment) is { } known)
+            {
+                language = known;
+            }
+            else
+            {
+                break;
+            }
+
+            segments.RemoveAt(segments.Count - 1);
+        }
+
+        var title = string.Join('.', segments).Trim();
+        return new ExternalSubtitleName(language, forced, isDefault, title.Length == 0 ? null : title);
+    }
 }

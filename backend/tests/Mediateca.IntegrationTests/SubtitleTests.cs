@@ -1,11 +1,14 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using Mediateca.Api.Items;
 using Mediateca.Core.Libraries;
 using Mediateca.Core.Media;
 using Mediateca.Core.Subtitles;
+using Mediateca.Core.Users;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Storage;
+using Mediateca.Infrastructure.Subtitles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -15,6 +18,7 @@ namespace Mediateca.IntegrationTests;
 /// <summary>
 /// Subtítulos (PLAN.md, secciones 9 y 10): la lista de pistas y su descarga en WebVTT, con archivos sueltos de
 /// verdad y con ffprobe y ffmpeg falsos (<see cref="FakeProcessRunner"/>), así que no necesitan FFmpeg instalado.
+/// También los que se suben desde el reproductor y quién los puede borrar.
 /// </summary>
 public sealed class SubtitleTests(MediatecaApiFactory factory) : IClassFixture<MediatecaApiFactory>, IAsyncLifetime
 {
@@ -29,6 +33,12 @@ public sealed class SubtitleTests(MediatecaApiFactory factory) : IClassFixture<M
         """;
 
     private const string ExtractedVtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHola desde ffmpeg\n\n";
+
+    private const string SrtAsVtt =
+        "WEBVTT\n\n00:00:01.500 --> 00:00:03.000\nHola, mundo\n\n00:00:04.000 --> 00:00:05.250\n<i>Adiós</i>\n\n";
+
+    private const string Ass =
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Del ASS\n";
 
     public async Task InitializeAsync()
     {
@@ -63,6 +73,29 @@ public sealed class SubtitleTests(MediatecaApiFactory factory) : IClassFixture<M
         client.GetJsonAsync<List<SubtitleTrackResponse>>($"/api/items/{id}/subtitles");
 
     private static ProcessResult Ok(string output) => new(ProcessOutcome.Completed, 0, output, string.Empty);
+
+    /// <summary>Sube un archivo como lo hace el reproductor: el cuerpo es el archivo tal cual y ?name= su nombre.</summary>
+    private static Task<HttpResponseMessage> UploadAsync(HttpClient client, object itemId, string name, string content, string query = "") =>
+        UploadBytesAsync(client, itemId, $"name={Uri.EscapeDataString(name)}{query}", Encoding.UTF8.GetBytes(content));
+
+    private static async Task<HttpResponseMessage> UploadBytesAsync(HttpClient client, object itemId, string query, byte[] content)
+    {
+        using var body = new ByteArrayContent(content);
+        body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        return await client.PostAsync($"/api/items/{itemId}/subtitles?{query}", body);
+    }
+
+    private async Task GrantAccessAsync(string userName, Guid libraryId)
+    {
+        var userId = await TestUsers.GetUserIdAsync(factory, userName);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MediatecaDbContext>();
+        if (!await db.LibraryAccess.AnyAsync(a => a.UserId == userId && a.LibraryId == libraryId))
+        {
+            db.LibraryAccess.Add(new UserLibraryAccess { UserId = userId, LibraryId = libraryId });
+            await db.SaveChangesAsync();
+        }
+    }
 
     [Fact]
     public async Task Lista_y_descarga_un_srt_suelto_junto_al_video()
@@ -285,5 +318,168 @@ public sealed class SubtitleTests(MediatecaApiFactory factory) : IClassFixture<M
         {
             Directory.Delete(outside, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task Sube_un_srt_lo_lista_al_final_como_subido_y_lo_sirve_en_WebVTT()
+    {
+        var (admin, _, first, second) = await CreateAnimeAsync(("Mi Anime/Lat/01.es.srt", Srt));
+        using var adminScope = admin;
+
+        using var response = await UploadAsync(admin, first.Id, "Mi Anime 01.en.srt", Srt);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var track = (await response.ReadJsonAsync<SubtitleTrackResponse>())!;
+        Assert.Matches("^u[0-9a-f]{32}$", track.Id);
+        Assert.Equal("Inglés (subido)", track.Label);
+        Assert.Equal("en", track.Language);
+        Assert.Equal("uploaded", track.Source);
+        Assert.Equal("subrip", track.Codec);
+        Assert.False(track.IsForced);
+        Assert.True(track.CanDelete);
+        Assert.Equal($"/api/items/{first.Id}/subtitles/{track.Id}.vtt", track.Url);
+        Assert.Equal(track.Url, response.Headers.Location?.OriginalString);
+
+        // Queda después del archivo suelto, solo en este episodio, y se sirve ya convertido.
+        var tracks = (await TracksAsync(admin, first.Id))!;
+        Assert.Equal(new[] { "x0", track.Id }, tracks.Select(t => t.Id).ToArray());
+        Assert.False(tracks[0].CanDelete);
+        Assert.DoesNotContain((await TracksAsync(admin, second.Id))!, t => t.Source == "uploaded");
+        using var vtt = await admin.GetAsync(track.Url);
+        Assert.Equal("text/vtt", vtt.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(SrtAsVtt, await vtt.Content.ReadAsStringAsync());
+
+        // En la carpeta de datos, no junto al video: las carpetas de medios son de solo lectura.
+        var dataPath = factory.Services.GetRequiredService<IOptions<StorageOptions>>().Value.DataPath;
+        Assert.Single(Directory.GetFiles(Path.Combine(dataPath, "uploads", "subtitles", first.Id.ToString()), "*.vtt"));
+        var json = await admin.GetStringAsync($"/api/items/{first.Id}/subtitles");
+        Assert.DoesNotContain(dataPath, json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("uploadedBy", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task El_idioma_elegido_gana_al_nombre_y_tambien_se_aceptan_vtt_y_ass()
+    {
+        var (admin, _, first, _) = await CreateAnimeAsync();
+        using var adminScope = admin;
+
+        using var chosen = await UploadAsync(admin, first.Id, "algo.es.srt", Srt, "&language=ja&forced=true");
+        using var vtt = await UploadAsync(admin, first.Id, "otro.vtt", "WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nHola\r\n");
+        using var ass = await UploadAsync(admin, first.Id, "tercero.pt.ass", Ass);
+
+        Assert.Equal(
+            new[] { HttpStatusCode.Created, HttpStatusCode.Created, HttpStatusCode.Created },
+            new[] { chosen.StatusCode, vtt.StatusCode, ass.StatusCode });
+        var tracks = (await TracksAsync(admin, first.Id))!;
+        Assert.Equal(new[] { "Japonés (forzados, subido)", "otro (subido)", "Portugués (subido)" }, tracks.Select(t => t.Label).ToArray());
+        Assert.Equal(new[] { "subrip", "webvtt", "ass" }, tracks.Select(t => t.Codec).ToArray());
+        Assert.Equal("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHola\n", await admin.GetStringAsync(tracks[1].Url));
+
+        // Sin ffmpeg (el doble responde "no instalado"), el .ass pasa por el convertidor básico de C#.
+        Assert.Equal("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nDel ASS\n\n", await admin.GetStringAsync(tracks[2].Url));
+    }
+
+    [Fact]
+    public async Task Rechaza_lo_que_no_es_un_subtitulo_lo_que_pesa_demasiado_y_un_archivo_sin_nombre()
+    {
+        var (admin, _, first, _) = await CreateAnimeAsync();
+        using var adminScope = admin;
+
+        foreach (var (name, content) in new[] { ("foto.jpg", Srt), ("01.srt", "nada"), ("01.vtt", "sin cabecera --> nada"), ("01.srt", "") })
+        {
+            using var rejected = await UploadAsync(admin, first.Id, name, content);
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            var problem = (await rejected.ReadJsonAsync<Microsoft.AspNetCore.Mvc.ProblemDetails>())!;
+            Assert.False(string.IsNullOrWhiteSpace(problem.Detail));
+        }
+
+        using var withoutName = await UploadBytesAsync(admin, first.Id, string.Empty, Encoding.UTF8.GetBytes(Srt));
+        Assert.Equal(HttpStatusCode.BadRequest, withoutName.StatusCode);
+
+        using var tooBig = await UploadBytesAsync(admin, first.Id, "name=01.srt", new byte[SubtitleService.MaxUploadBytes + 1]);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooBig.StatusCode);
+
+        Assert.Empty((await TracksAsync(admin, first.Id))!);
+    }
+
+    [Fact]
+    public async Task Solo_quien_lo_subio_o_un_administrador_lo_puede_borrar()
+    {
+        var (admin, _, first, _) = await CreateAnimeAsync(("Mi Anime/Lat/01.es.srt", Srt));
+        using var adminScope = admin;
+        var libraryId = (await admin.GetJsonAsync<ItemDetail>($"/api/items/{first.Id}"))!.LibraryId;
+        const string uploaderName = "sube-subtitulos";
+        const string viewerName = "ve-subtitulos";
+        foreach (var name in new[] { uploaderName, viewerName })
+        {
+            await TestUsers.EnsureUserAsync(factory, name);
+            await GrantAccessAsync(name, libraryId);
+        }
+
+        using var uploader = await TestUsers.LoginAsync(factory, uploaderName);
+        using var viewer = await TestUsers.LoginAsync(factory, viewerName);
+        using var created = await UploadAsync(uploader, first.Id, "mio.es.srt", Srt);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var track = (await created.ReadJsonAsync<SubtitleTrackResponse>())!;
+        var url = $"/api/items/{first.Id}/subtitles/{track.Id}";
+
+        // Todos los que ven el video lo ven; solo quien lo subió y el administrador pueden borrarlo.
+        Assert.False((await TracksAsync(viewer, first.Id))!.Single(t => t.Id == track.Id).CanDelete);
+        Assert.True((await TracksAsync(uploader, first.Id))!.Single(t => t.Id == track.Id).CanDelete);
+        Assert.True((await TracksAsync(admin, first.Id))!.Single(t => t.Id == track.Id).CanDelete);
+        Assert.Equal(SrtAsVtt, await viewer.GetStringAsync(track.Url));
+        using (var forbidden = await viewer.DeleteAsync(url))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        }
+
+        using (var deleted = await uploader.DeleteAsync(url))
+        {
+            Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        }
+
+        Assert.Equal(new[] { "x0" }, (await TracksAsync(admin, first.Id))!.Select(t => t.Id).ToArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync(track.Url)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await uploader.DeleteAsync(url)).StatusCode);
+
+        // El administrador borra lo de otros, pero nunca una pista del archivo.
+        using var again = await UploadAsync(uploader, first.Id, "mio.es.srt", Srt);
+        var second = (await again.ReadJsonAsync<SubtitleTrackResponse>())!;
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/api/items/{first.Id}/subtitles/{second.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.DeleteAsync($"/api/items/{first.Id}/subtitles/x0")).StatusCode);
+        Assert.Equal(new[] { "x0" }, (await TracksAsync(admin, first.Id))!.Select(t => t.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task Sin_acceso_sin_token_o_sin_sesion_no_se_sube_ni_se_borra_nada()
+    {
+        var (admin, _, first, _) = await CreateAnimeAsync();
+        using var adminScope = admin;
+        using var created = await UploadAsync(admin, first.Id, "01.es.srt", Srt);
+        var track = (await created.ReadJsonAsync<SubtitleTrackResponse>())!;
+        var url = $"/api/items/{first.Id}/subtitles/{track.Id}";
+        const string outsider = "sin-acceso-subtitulos";
+        await TestUsers.EnsureUserAsync(factory, outsider);
+        using var user = await TestUsers.LoginAsync(factory, outsider);
+
+        // Sin acceso a la biblioteca, una carpeta (no es un video) o algo que no existe: 404.
+        var parentId = (await admin.GetJsonAsync<ItemDetail>($"/api/items/{first.Id}"))!.ParentId;
+        Assert.Equal(HttpStatusCode.NotFound, (await UploadAsync(user, first.Id, "01.es.srt", Srt)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await user.DeleteAsync(url)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await UploadAsync(admin, parentId!, "01.es.srt", Srt)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await UploadAsync(admin, Guid.NewGuid(), "01.es.srt", Srt)).StatusCode);
+
+        // Sin la cabecera XSRF: 400, igual que cualquier otro POST o DELETE.
+        using var noToken = await TestUsers.LoginAsync(factory, TestUsers.AdminUserName);
+        noToken.DefaultRequestHeaders.Remove("X-XSRF-TOKEN");
+        Assert.Equal(HttpStatusCode.BadRequest, (await UploadAsync(noToken, first.Id, "01.es.srt", Srt)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await noToken.DeleteAsync(url)).StatusCode);
+
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await UploadAsync(anonymous, first.Id, "01.es.srt", Srt)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.DeleteAsync(url)).StatusCode);
+
+        // Sigue ahí y es el único.
+        Assert.Equal(new[] { track.Id }, (await TracksAsync(admin, first.Id))!.Select(t => t.Id).ToArray());
     }
 }
