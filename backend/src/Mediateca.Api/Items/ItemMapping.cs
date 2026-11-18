@@ -1,5 +1,6 @@
 using Mediateca.Core.Libraries;
 using Mediateca.Core.Media;
+using Mediateca.Core.Metadata;
 using Mediateca.Core.Users;
 
 namespace Mediateca.Api.Items;
@@ -49,7 +50,9 @@ internal static class ItemMapping
         LibraryType libraryType,
         IReadOnlyList<ItemReference> ancestors,
         UserItemData? data = null,
-        int? unplayedCount = null) =>
+        int? unplayedCount = null,
+        bool hasBackdrop = false,
+        bool isAdmin = false) =>
         new(
             item.Id,
             KindOf(item),
@@ -77,7 +80,29 @@ internal static class ItemMapping
             (item as PlayableItem)?.FileSize,
             data?.PositionSeconds ?? 0,
             data?.Played ?? false,
-            unplayedCount);
+            unplayedCount,
+            item.OriginalTitle,
+            item.EndYear,
+            item.Status?.ToString(),
+            item.Studios,
+            item.Tags,
+            item.Directors,
+            item.Actors,
+            item.RuntimeMinutes,
+            hasBackdrop || !string.IsNullOrEmpty(item.BackdropPath),
+            SafeLinks(item.ExternalLinksJson),
+            item.NextAiringAt,
+            item.NextAiringEpisode,
+            item.MetadataUpdatedAt,
+            item is Series or Movie ? item.MetadataStatus.ToString() : null,
+            isAdmin ? item.MetadataMessage : null);
+
+    // Solo enlaces http(s): lo guardado viene de un proveedor y nunca debe llevar un esquema como javascript:.
+    private static IReadOnlyList<ExternalLink> SafeLinks(string? json) =>
+        ExternalLinks.Parse(json)
+            .Where(link => Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) &&
+                           (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+            .ToList();
 
     // El cliente nunca ve PosterPath, solo si hay imagen; la imagen sale de /api/items/{id}/image.
     public static bool HasImage(MediaItem item) => !string.IsNullOrEmpty(item.PosterPath);

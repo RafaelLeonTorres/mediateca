@@ -17,7 +17,7 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
     // If you encounter a merge conflict in the line below, it means you need to
     // discard one of the migration branches and recreate its migrations on top of
     // the other branch. See https://aka.ms/efcore-docs-migrations-conflicts for more info.
-    public override string LastMigrationId => "20261117165848_WorkerYHorarioDeEscaneo";
+    public override string LastMigrationId => "20261118145226_Metadatos";
 
     protected override void BuildModel(ModelBuilder modelBuilder)
     {
@@ -69,8 +69,15 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
                     .ValueGeneratedOnAdd()
                     .HasColumnType("uuid");
 
-                b.Property<int?>("AniDbId")
+                b.PrimitiveCollection<List<string>>("Actors")
+                    .IsRequired()
+                    .HasColumnType("text[]");
+
+                b.Property<int?>("AniListId")
                     .HasColumnType("integer");
+
+                b.Property<string>("BackdropPath")
+                    .HasColumnType("text");
 
                 b.Property<double?>("CommunityRating")
                     .HasColumnType("double precision");
@@ -81,6 +88,16 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
 
                 b.Property<DateTimeOffset>("DateAdded")
                     .HasColumnType("timestamp with time zone");
+
+                b.PrimitiveCollection<List<string>>("Directors")
+                    .IsRequired()
+                    .HasColumnType("text[]");
+
+                b.Property<int?>("EndYear")
+                    .HasColumnType("integer");
+
+                b.Property<string>("ExternalLinksJson")
+                    .HasColumnType("jsonb");
 
                 b.PrimitiveCollection<List<string>>("Genres")
                     .IsRequired()
@@ -98,10 +115,27 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
                 b.Property<Guid>("LibraryId")
                     .HasColumnType("uuid");
 
+                b.Property<string>("MetadataMessage")
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
+
                 b.Property<string>("MetadataStatus")
                     .IsRequired()
                     .HasMaxLength(20)
                     .HasColumnType("character varying(20)");
+
+                b.Property<DateTimeOffset?>("MetadataUpdatedAt")
+                    .HasColumnType("timestamp with time zone");
+
+                b.Property<DateTimeOffset?>("NextAiringAt")
+                    .HasColumnType("timestamp with time zone");
+
+                b.Property<int?>("NextAiringEpisode")
+                    .HasColumnType("integer");
+
+                b.Property<string>("OriginalTitle")
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
 
                 b.Property<string>("Overview")
                     .HasColumnType("text");
@@ -112,10 +146,29 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
                 b.Property<string>("PosterPath")
                     .HasColumnType("text");
 
+                b.Property<int?>("RuntimeMinutes")
+                    .HasColumnType("integer");
+
+                b.Property<string>("ScanKey")
+                    .HasMaxLength(600)
+                    .HasColumnType("character varying(600)");
+
                 b.Property<string>("SortTitle")
                     .IsRequired()
                     .HasMaxLength(500)
                     .HasColumnType("character varying(500)");
+
+                b.Property<string>("Status")
+                    .HasMaxLength(20)
+                    .HasColumnType("character varying(20)");
+
+                b.PrimitiveCollection<List<string>>("Studios")
+                    .IsRequired()
+                    .HasColumnType("text[]");
+
+                b.PrimitiveCollection<List<string>>("Tags")
+                    .IsRequired()
+                    .HasColumnType("text[]");
 
                 b.Property<string>("Title")
                     .IsRequired()
@@ -135,6 +188,8 @@ partial class MediatecaDbContextModelSnapshot : ModelSnapshot
                 NpgsqlIndexBuilderExtensions.HasOperators(index, new[] { "gin_trgm_ops" });
 
                 b.HasIndex("LibraryId", "DateAdded");
+
+                b.HasIndex("LibraryId", "MetadataStatus");
 
                 b.ToTable("MediaItems");
 

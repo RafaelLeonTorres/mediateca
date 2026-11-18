@@ -26,7 +26,7 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# /data guarda pósters, llaves de sesión y la caché de AniDB. En Compose es el volumen "appdata".
+# /data guarda pósters, llaves de sesión y la caché de metadatos. En Compose es el volumen "appdata".
 RUN mkdir -p /data && chown "$APP_UID" /data
 ENV Storage__DataPath=/data
 

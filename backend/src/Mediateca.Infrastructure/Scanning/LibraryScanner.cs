@@ -31,11 +31,19 @@ public sealed class LibraryScanner(
 
     private const int MaxArtistLength = 300;
 
+    private const int MaxScanKeyLength = 600;
+
     private const int MaxDepth = 32;
 
     // Imágenes junto a los medios que se usan como póster o carátula, por orden de preferencia.
     private static readonly string[] PosterCandidates =
         new[] { "poster", "folder", "cover" }
+            .SelectMany(name => new[] { ".jpg", ".jpeg", ".png" }.Select(extension => name + extension))
+            .ToArray();
+
+    // Imagen de fondo junto a los medios (como la guarda Jellyfin).
+    private static readonly string[] BackdropCandidates =
+        new[] { "backdrop", "fanart", "background" }
             .SelectMany(name => new[] { ".jpg", ".jpeg", ".png" }.Select(extension => name + extension))
             .ToArray();
 
@@ -207,6 +215,10 @@ public sealed class LibraryScanner(
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.PosterPath, posterPath), cancellationToken);
         }
 
+        // 5b. Las imágenes locales mandan sobre las que descargó el proveedor: si una carpeta ya guardada ahora tiene
+        //     poster.jpg o backdrop.jpg, se usan. Si no tiene, no se toca lo que haya (puede ser el del proveedor).
+        await RefreshLocalImagesAsync(context, files, existing, cancellationToken);
+
         // 6. Quitar los padres que se quedaron sin hijos (después de crear, para no borrar uno que va a recibirlos).
         await DeleteEmptyParentsAsync(library.Id, cancellationToken);
 
@@ -356,11 +368,13 @@ public sealed class LibraryScanner(
 
         var series = await db.MediaItems.AsNoTracking().OfType<Series>()
             .Where(item => item.LibraryId == libraryId)
-            .Select(item => new { item.Id, item.Title, item.Year })
+            .Select(item => new { item.Id, item.Title, item.Year, item.ScanKey, item.PosterPath, item.BackdropPath })
             .ToListAsync(cancellationToken);
         foreach (var row in series)
         {
-            context.Series.TryAdd(SeriesKey(row.Title, row.Year), row.Id);
+            // Con metadatos, Title y Year ya no son los de la carpeta: se usa la clave que guardó el escaneo.
+            context.Series.TryAdd(row.ScanKey ?? ScanKeys.Series(row.Title, row.Year), row.Id);
+            context.SeriesImages[row.Id] = new KnownImages(row.PosterPath, row.BackdropPath);
         }
 
         var seasons = await db.MediaItems.AsNoTracking().OfType<Season>()
@@ -413,13 +427,14 @@ public sealed class LibraryScanner(
             SortTitle = SortTitles.From(parsed.Title),
             Year = parsed.Year,
             ImdbId = parsed.ImdbId,
-            AniDbId = parsed.AniDbId,
+            AniListId = parsed.AniListId,
             FilePath = file.FullPath,
             FileSize = file.Size,
             FileModifiedAt = file.ModifiedAt,
             DurationSeconds = tagReader.ReadDuration(file.FullPath),
             // Una película suelta en la carpeta de la biblioteca no tiene póster propio: la imagen sería de todas.
             PosterPath = IsInSubfolder(file) ? FindPoster(context, Path.GetDirectoryName(file.FullPath)) : null,
+            BackdropPath = IsInSubfolder(file) ? FindBackdrop(context, Path.GetDirectoryName(file.FullPath)) : null,
             DateAdded = DateTimeOffset.UtcNow,
             MetadataStatus = MetadataStatus.Pending,
         };
@@ -494,9 +509,15 @@ public sealed class LibraryScanner(
 
     private Guid GetOrCreateSeries(ScanContext context, ScannedFile file, ParsedEpisode parsed)
     {
-        var key = SeriesKey(parsed.SeriesTitle, parsed.SeriesYear);
+        var key = ScanKeys.Series(parsed.SeriesTitle, parsed.SeriesYear);
         if (context.Series.TryGetValue(key, out var existingId))
         {
+            // Para refrescar sus imágenes locales al final del escaneo (una serie ya guardada no pasa por aquí al crearse).
+            if (context.SeriesImages.ContainsKey(existingId))
+            {
+                context.SeriesFolders.TryAdd(existingId, SeriesFolder(file));
+            }
+
             return existingId;
         }
 
@@ -508,8 +529,10 @@ public sealed class LibraryScanner(
             SortTitle = SortTitles.From(parsed.SeriesTitle),
             Year = parsed.SeriesYear,
             ImdbId = parsed.ImdbId,
-            AniDbId = parsed.AniDbId,
+            AniListId = parsed.AniListId,
             PosterPath = FindPoster(context, SeriesFolder(file)),
+            BackdropPath = FindBackdrop(context, SeriesFolder(file)),
+            ScanKey = Truncate(key, MaxScanKeyLength),
             DateAdded = DateTimeOffset.UtcNow,
             MetadataStatus = MetadataStatus.Pending,
         };
@@ -789,6 +812,68 @@ public sealed class LibraryScanner(
                     .SetProperty(j => j.ErrorMessage, job.ErrorMessage),
                 cancellationToken);
 
+    private async Task RefreshLocalImagesAsync(
+        ScanContext context,
+        List<ScannedFile> files,
+        Dictionary<string, ExistingFile> existing,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (seriesId, folder) in context.SeriesFolders)
+        {
+            if (folder is null || !context.SeriesImages.TryGetValue(seriesId, out var known))
+            {
+                continue;
+            }
+
+            await UpdateImagesAsync(seriesId, known, FindPoster(context, folder), FindBackdrop(context, folder), cancellationToken);
+        }
+
+        if (context.Library.Type != LibraryType.Movies)
+        {
+            return;
+        }
+
+        var stored = await db.MediaItems.AsNoTracking().OfType<Movie>()
+            .Where(item => item.LibraryId == context.Library.Id)
+            .Select(item => new { item.Id, item.PosterPath, item.BackdropPath })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+        foreach (var file in files)
+        {
+            if (!IsInSubfolder(file) ||
+                !existing.TryGetValue(file.FullPath, out var movie) ||
+                !stored.TryGetValue(movie.Id, out var known))
+            {
+                continue;
+            }
+
+            var folder = Path.GetDirectoryName(file.FullPath);
+            await UpdateImagesAsync(
+                movie.Id,
+                new KnownImages(known.PosterPath, known.BackdropPath),
+                FindPoster(context, folder),
+                FindBackdrop(context, folder),
+                cancellationToken);
+        }
+    }
+
+    private async Task UpdateImagesAsync(
+        Guid id, KnownImages known, string? poster, string? backdrop, CancellationToken cancellationToken)
+    {
+        if (poster is not null && poster != known.PosterPath)
+        {
+            await db.MediaItems
+                .Where(item => item.Id == id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.PosterPath, poster), cancellationToken);
+        }
+
+        if (backdrop is not null && backdrop != known.BackdropPath)
+        {
+            await db.MediaItems
+                .Where(item => item.Id == id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.BackdropPath, backdrop), cancellationToken);
+        }
+    }
+
     private async Task DeleteEmptyParentsAsync(Guid libraryId, CancellationToken cancellationToken)
     {
         await db.MediaItems.OfType<Season>()
@@ -872,6 +957,25 @@ public sealed class LibraryScanner(
         return found;
     }
 
+    private string? FindBackdrop(ScanContext context, string? folder)
+    {
+        if (folder is null)
+        {
+            return null;
+        }
+
+        var names = FolderFileNames(context, folder);
+        foreach (var candidate in BackdropCandidates)
+        {
+            if (names.TryGetValue(candidate, out var actual))
+            {
+                return Path.Combine(folder, actual);
+            }
+        }
+
+        return null;
+    }
+
     // Imagen de una temporada o carpeta: la suya ("Lat/folder.jpg") o, si no tiene, la de la serie.
     private string? SeasonPoster(ScanContext context, ScannedFile file) =>
         IsInSubfolder(file)
@@ -952,8 +1056,6 @@ public sealed class LibraryScanner(
 
     // ---------------------------------------------------------------- claves y utilidades
 
-    private static string SeriesKey(string title, int? year) => $"{title.ToLowerInvariant()}|{year}";
-
     private static string SeasonKey(Guid seriesId, string title) => $"{seriesId:N}|{title.ToLowerInvariant()}";
 
     private static string AlbumKey(string? albumArtist, string album) =>
@@ -987,6 +1089,8 @@ public sealed class LibraryScanner(
     /// <summary>Temporada conocida en este escaneo: su id y su imagen.</summary>
     private sealed record KnownSeason(Guid Id, string? PosterPath);
 
+    private sealed record KnownImages(string? PosterPath, string? BackdropPath);
+
     private sealed record TrackInfo(
         string Title,
         string? Artist,
@@ -1010,6 +1114,12 @@ public sealed class LibraryScanner(
         public List<string> UnreadableRoots { get; } = [];
 
         public Dictionary<string, Guid> Series { get; } = new();
+
+        /// <summary>Imágenes que tienen guardadas las series que ya existían, para actualizarlas solo si cambiaron.</summary>
+        public Dictionary<Guid, KnownImages> SeriesImages { get; } = new();
+
+        /// <summary>Carpeta de las series que ya existían, por si ahora tienen un póster o un fondo local.</summary>
+        public Dictionary<Guid, string?> SeriesFolders { get; } = new();
 
         public Dictionary<string, KnownSeason> Seasons { get; } = new();
 

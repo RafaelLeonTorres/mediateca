@@ -32,7 +32,7 @@ public static class ItemEndpoints
             .WithSummary("Temporadas y episodios de una serie, episodios de una temporada o pistas de un álbum, en orden.");
 
         group.MapGet("/items/{id:guid}/image", ImageAsync)
-            .WithSummary("Póster o carátula del elemento. 404 si no tiene.");
+            .WithSummary("Póster o carátula del elemento, o con type=backdrop su imagen de fondo (las temporadas y episodios usan la de su serie). 404 si no tiene.");
 
         group.MapGet("/me/recently-added", RecentlyAddedAsync)
             .WithSummary("Lo último que se agregó a las bibliotecas que el usuario puede ver.");
@@ -60,6 +60,7 @@ public static class ItemEndpoints
 
         // Ruta de navegación, de la serie hacia abajo: Serie y Temporada para un episodio.
         var ancestors = new List<ItemReference>();
+        var hasBackdrop = !string.IsNullOrEmpty(item.BackdropPath);
         var parentId = item.ParentId;
         while (parentId is { } currentId && ancestors.Count < MaxAncestors)
         {
@@ -69,6 +70,7 @@ public static class ItemEndpoints
                 break;
             }
 
+            hasBackdrop |= !string.IsNullOrEmpty(parent.BackdropPath);
             ancestors.Insert(0, new ItemReference(parent.Id, ItemMapping.KindOf(parent), parent.Title));
             parentId = parent.ParentId;
         }
@@ -90,7 +92,8 @@ public static class ItemEndpoints
                 .CountAsync(cancellationToken);
         }
 
-        return TypedResults.Ok(ItemMapping.ToDetail(item, library.Name, library.Type, ancestors, data, unplayed));
+        return TypedResults.Ok(ItemMapping.ToDetail(
+            item, library.Name, library.Type, ancestors, data, unplayed, hasBackdrop, isAdmin));
     }
 
     private static async Task<Results<Ok<List<ChildItem>>, NotFound>> ChildrenAsync(
@@ -155,16 +158,46 @@ public static class ItemEndpoints
 
     private static async Task<Results<PhysicalFileHttpResult, NotFound>> ImageAsync(
         Guid id,
+        string? type,
         HttpContext http,
         ClaimsPrincipal user,
         MediatecaDbContext db,
         IOptions<StorageOptions> storage,
         CancellationToken cancellationToken)
     {
-        var posterPath = await db.VisibleItems(user.GetId(), user.IsAdmin())
+        // type=backdrop pide la imagen de fondo; sin type (o con type=poster), el póster.
+        var backdrop = string.Equals(type, "backdrop", StringComparison.OrdinalIgnoreCase);
+        if (type is not null && !backdrop && !string.Equals(type, "poster", StringComparison.OrdinalIgnoreCase))
+        {
+            return TypedResults.NotFound();
+        }
+
+        var row = await db.VisibleItems(user.GetId(), user.IsAdmin())
             .Where(i => i.Id == id)
-            .Select(i => i.PosterPath)
+            .Select(i => new { i.PosterPath, i.BackdropPath, i.ParentId })
             .FirstOrDefaultAsync(cancellationToken);
+        if (row is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        var posterPath = backdrop ? row.BackdropPath : row.PosterPath;
+        if (backdrop && string.IsNullOrEmpty(posterPath))
+        {
+            // Una temporada o un episodio muestra el fondo de su serie. Los padres son de la misma biblioteca,
+            // que el usuario ya puede ver.
+            var parentId = row.ParentId;
+            for (var depth = 0; depth < MaxAncestors && parentId is { } currentId && string.IsNullOrEmpty(posterPath); depth++)
+            {
+                var parent = await db.MediaItems.AsNoTracking()
+                    .Where(i => i.Id == currentId)
+                    .Select(i => new { i.BackdropPath, i.ParentId })
+                    .FirstOrDefaultAsync(cancellationToken);
+                posterPath = parent?.BackdropPath;
+                parentId = parent?.ParentId;
+            }
+        }
+
         if (string.IsNullOrEmpty(posterPath))
         {
             return TypedResults.NotFound();

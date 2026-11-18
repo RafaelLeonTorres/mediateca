@@ -1,5 +1,6 @@
 using Mediateca.Core.Subtitles;
 using Mediateca.Infrastructure;
+using Mediateca.Infrastructure.Metadata;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -15,7 +16,7 @@ namespace Mediateca.IntegrationTests;
 /// procesador de escaneos del worker dentro del mismo proceso. Cada clase de pruebas tiene el suyo,
 /// así no comparten datos.
 /// </summary>
-public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
+public class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18").Build();
     private readonly string _dataPath = Path.Combine(Path.GetTempPath(), $"mediateca-pruebas-{Guid.NewGuid():N}");
@@ -40,6 +41,15 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
     /// </summary>
     public FakeProcessRunner Processes { get; } = new();
 
+    /// <summary>
+    /// Los servidores de metadatos falsos (AniList, OMDb e imágenes): las pruebas guardan en ellos lo que quieren que
+    /// responda la red, y la cola de metadatos se corre a mano con <see cref="MetadataQueueRunner"/>.
+    /// </summary>
+    public FakeMetadataHttp Metadata { get; } = new();
+
+    /// <summary>La clave de OMDb de la prueba. Una subclase la deja vacía para probar la aplicación sin clave.</summary>
+    protected virtual string? OmdbApiKey => "clave-de-prueba";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // La base "mediateca" no existe en el contenedor: la app tiene que crearla al arrancar.
@@ -63,6 +73,10 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
                 ["Logging:LogLevel:Microsoft.EntityFrameworkCore"] = "Warning",
                 // El procesador de escaneos de las pruebas mira la cola cada 200 ms y no cada 3 s.
                 ["Scanning:QueuePollInterval"] = "00:00:00.200",
+                // Los proveedores falsos responden al instante: sin esperas de 2 s entre solicitudes.
+                ["Metadata:Omdb:ApiKey"] = OmdbApiKey,
+                ["Metadata:AniList:RequestInterval"] = "00:00:00.001",
+                ["Metadata:Omdb:RequestInterval"] = "00:00:00.001",
             }));
 
         // En producción los escaneos los corre el worker, un proceso aparte. Las pruebas registran el
@@ -70,6 +84,13 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
         builder.ConfigureServices(services =>
         {
             services.AddScanProcessing();
+
+            // La cola de metadatos no corre sola: las pruebas la corren con MetadataQueueRunner.RunUntilIdleAsync, así
+            // saben cuándo terminó. Los clientes HTTP con nombre usan los servidores falsos.
+            services.AddMetadataQueue();
+            services.AddHttpClient(HttpClientNames.AniList).ConfigurePrimaryHttpMessageHandler(() => Metadata.AniList);
+            services.AddHttpClient(HttpClientNames.Omdb).ConfigurePrimaryHttpMessageHandler(() => Metadata.Omdb);
+            services.AddHttpClient(HttpClientNames.Images).ConfigurePrimaryHttpMessageHandler(() => Metadata.Images);
             services.RemoveAll<IProcessRunner>();
             services.AddSingleton<IProcessRunner>(Processes);
         });
@@ -89,4 +110,10 @@ public sealed class MediatecaApiFactory : WebApplicationFactory<Program>, IAsync
             }
         }
     }
+}
+
+/// <summary>La aplicación sin <c>Metadata:Omdb:ApiKey</c>: OMDb queda desactivado y nada falla.</summary>
+public sealed class MediatecaApiFactorySinClaveOmdb : MediatecaApiFactory
+{
+    protected override string? OmdbApiKey => "";
 }

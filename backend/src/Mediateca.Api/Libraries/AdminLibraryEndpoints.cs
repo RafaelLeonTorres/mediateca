@@ -1,7 +1,9 @@
 using Mediateca.Api.Auth;
 using Mediateca.Core.Libraries;
 using Mediateca.Core.Scanning;
+using Mediateca.Api.Metadata;
 using Mediateca.Infrastructure.Libraries;
+using Mediateca.Infrastructure.Metadata;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Scanning;
 using Mediateca.Infrastructure.Storage;
@@ -50,16 +52,18 @@ public static class AdminLibraryEndpoints
     }
 
     private static async Task<Ok<List<AdminLibraryResponse>>> ListAsync(
-        MediatecaDbContext db, IOptions<StorageOptions> storage, CancellationToken cancellationToken)
+        MediatecaDbContext db, IOptions<StorageOptions> storage, ProviderStatusService providers, CancellationToken cancellationToken)
     {
         var libraries = await db.Libraries.AsNoTracking().OrderBy(l => l.Name).ToListAsync(cancellationToken);
         var counts = await db.CountTopLevelAsync(cancellationToken);
+        var metadata = await db.MetadataSummariesAsync(providers, libraries, cancellationToken);
 
         var responses = new List<AdminLibraryResponse>();
         foreach (var library in libraries)
         {
             var lastScan = await LastScanAsync(db, library.Id, cancellationToken);
-            responses.Add(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath));
+            responses.Add(ToResponse(
+                library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath, metadata.GetValueOrDefault(library.Id)));
         }
 
         return TypedResults.Ok(responses);
@@ -131,6 +135,7 @@ public static class AdminLibraryEndpoints
         MediatecaDbContext db,
         LibraryPathValidator pathValidator,
         IOptions<StorageOptions> storage,
+        ProviderStatusService providers,
         CancellationToken cancellationToken)
     {
         var library = await db.Libraries.FirstOrDefaultAsync(l => l.Id == id, cancellationToken);
@@ -182,7 +187,9 @@ public static class AdminLibraryEndpoints
 
         var counts = await db.CountTopLevelAsync(cancellationToken);
         var lastScan = await LastScanAsync(db, library.Id, cancellationToken);
-        return TypedResults.Ok(ToResponse(library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath));
+        var metadata = await db.MetadataSummariesAsync(providers, [library], cancellationToken);
+        return TypedResults.Ok(ToResponse(
+            library, counts.GetValueOrDefault(library.Id), lastScan, storage.Value.DrivesPath, metadata.GetValueOrDefault(library.Id)));
     }
 
     private static async Task<Results<NoContent, NotFound, ProblemHttpResult>> DeleteAsync(
@@ -274,7 +281,8 @@ public static class AdminLibraryEndpoints
             .OrderByDescending(j => j.CreatedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-    private static AdminLibraryResponse ToResponse(Library library, int itemCount, ScanJob? lastScan, string drivesPath) =>
+    private static AdminLibraryResponse ToResponse(
+        Library library, int itemCount, ScanJob? lastScan, string drivesPath, MetadataSummary? metadata = null) =>
         new(
             library.Id,
             library.Name,
@@ -284,5 +292,6 @@ public static class AdminLibraryEndpoints
             library.CreatedAt,
             library.LastScannedAt,
             itemCount,
-            lastScan is null ? null : ScanJobResponse.From(lastScan));
+            lastScan is null ? null : ScanJobResponse.From(lastScan),
+            metadata);
 }

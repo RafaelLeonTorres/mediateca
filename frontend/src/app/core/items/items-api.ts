@@ -31,6 +31,18 @@ export interface ItemReference {
   title: string;
 }
 
+/** Estado de emisión de una serie o película. */
+export type ReleaseStatus = 'Finished' | 'Airing' | 'Upcoming' | 'Cancelled' | 'Hiatus';
+
+/** Resultado de buscar metadatos de un elemento (solo se informa a administradores). */
+export type MetadataStatus = 'Pending' | 'Matched' | 'NotFound' | 'Error';
+
+/** Enlace a un sitio externo (AniList, MyAnimeList, IMDb). */
+export interface ExternalLink {
+  site: string;
+  url: string;
+}
+
 /** Detalle de un elemento de cualquier tipo: GET /api/items/{id}. */
 export interface ItemDetail {
   id: string;
@@ -63,6 +75,26 @@ export interface ItemDetail {
   played: boolean;
   /** Episodios que le faltan por ver en una serie o temporada; null en lo demás. */
   unplayedCount: number | null;
+  /** Título original (japonés, romaji...) cuando difiere del título que se muestra. */
+  originalTitle: string | null;
+  /** Año en que terminó la emisión; null si sigue en emisión o es una película. */
+  endYear: number | null;
+  status: ReleaseStatus | null;
+  studios: string[];
+  tags: string[];
+  directors: string[];
+  actors: string[];
+  runtimeMinutes: number | null;
+  /** ¿Tiene imagen de fondo (propia o de un ancestro)? */
+  hasBackdrop: boolean;
+  links: ExternalLink[];
+  /** Próximo episodio por emitirse (ISO 8601, UTC). */
+  nextAiringAt: string | null;
+  nextAiringEpisode: number | null;
+  metadataUpdatedAt: string | null;
+  /** Solo para administradores. */
+  metadataStatus: MetadataStatus | null;
+  metadataMessage: string | null;
 }
 
 /**
@@ -110,8 +142,8 @@ export interface ResumeItem {
 }
 
 /** Dirección de la imagen de un elemento. Responde 404 si no tiene. */
-export function imageUrl(id: string): string {
-  return `/api/items/${id}/image`;
+export function imageUrl(id: string, type: 'poster' | 'backdrop' = 'poster'): string {
+  return type === 'backdrop' ? `/api/items/${id}/image?type=backdrop` : `/api/items/${id}/image`;
 }
 
 /** Lecturas de elementos. Los métodos se llaman en un contexto de inyección. */

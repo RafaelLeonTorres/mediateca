@@ -1,4 +1,5 @@
 using Mediateca.Core.Libraries;
+using Mediateca.Core.Metadata;
 
 namespace Mediateca.Api.Items;
 
@@ -23,6 +24,11 @@ public sealed record ItemReference(Guid Id, string Kind, string Title);
 /// duración y tamaño para lo que se reproduce. Nunca incluye la ruta del archivo en el servidor.
 /// <c>PositionSeconds</c> y <c>Played</c> son del usuario que pregunta (solo cuentan en lo que se
 /// reproduce); <c>UnplayedCount</c> es cuántos episodios le faltan por ver en una serie o temporada.
+/// Los campos de metadatos (fase 4) son los de AniList u OMDb y solo vienen en series y películas, salvo
+/// <c>HasBackdrop</c>, que también cuenta el fondo de la serie en sus temporadas y episodios. <c>Status</c> es
+/// Airing, Finished, Upcoming, Cancelled o Hiatus; <c>NextAiringAt</c> es una fecha en UTC (el navegador la muestra
+/// en la zona horaria del usuario). <c>MetadataStatus</c> es Pending, Matched, NotFound o Error;
+/// <c>MetadataMessage</c> solo se envía a administradores.
 /// </summary>
 public sealed record ItemDetail(
     Guid Id,
@@ -51,7 +57,22 @@ public sealed record ItemDetail(
     long? FileSize,
     double PositionSeconds = 0,
     bool Played = false,
-    int? UnplayedCount = null);
+    int? UnplayedCount = null,
+    string? OriginalTitle = null,
+    int? EndYear = null,
+    string? Status = null,
+    IReadOnlyList<string>? Studios = null,
+    IReadOnlyList<string>? Tags = null,
+    IReadOnlyList<string>? Directors = null,
+    IReadOnlyList<string>? Actors = null,
+    int? RuntimeMinutes = null,
+    bool HasBackdrop = false,
+    IReadOnlyList<ExternalLink>? Links = null,
+    DateTimeOffset? NextAiringAt = null,
+    int? NextAiringEpisode = null,
+    DateTimeOffset? MetadataUpdatedAt = null,
+    string? MetadataStatus = null,
+    string? MetadataMessage = null);
 
 /// <summary>
 /// Hijo de un elemento: temporada o episodio de una serie, episodio de una temporada, pista de un álbum.

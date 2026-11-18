@@ -49,7 +49,7 @@ public class EpisodeNameParserTests
     // Episodios con versión.
     [InlineData("Mi Anime/[Grupo] Mi Anime - 05v2 [1080p].mkv", "Mi Anime", 5, null)]
     // Calidad entre paréntesis y CRC.
-    [InlineData("Mi Anime (2019) [anidbid-23]/[Grupo] Mi Anime - 12 (1080p x265) [ABCD1234].mkv", "Mi Anime", 12, null)]
+    [InlineData("Mi Anime (2019) [anilistid-21]/[Grupo] Mi Anime - 12 (1080p x265) [ABCD1234].mkv", "Mi Anime", 12, null)]
     // El año no es el episodio.
     [InlineData("Mi Anime/Mi Anime - 2019 - 05.mkv", "Mi Anime", 5, null)]
     [InlineData("Mi Anime/[G] Mi Anime - 05 (2019).mkv", "Mi Anime", 5, null)]
@@ -178,13 +178,18 @@ public class EpisodeNameParserTests
     public void Lee_las_etiquetas_de_identificador_de_la_carpeta()
     {
         var imdb = EpisodeNameParser.ParseSeries("Mi Serie (2019) [imdbid-tt1234567]/Temporada 01/Mi Serie S01E02.mkv");
-        var anidb = EpisodeNameParser.ParseAnime("Mi Anime (2019) [anidbid-23]/[Grupo] Mi Anime - 12 [1080p].mkv");
+        var anilist = EpisodeNameParser.ParseAnime("Mi Anime (2019) [anilistid-21]/[Grupo] Mi Anime - 12 [1080p].mkv");
+        var anidb = EpisodeNameParser.ParseAnime("Otro Anime (2019) [anidbid-23]/[Grupo] Otro Anime - 12 [1080p].mkv");
 
         Assert.Equal("tt1234567", imdb.ImdbId);
         Assert.Equal("Mi Serie", imdb.SeriesTitle);
-        Assert.Equal(23, anidb.AniDbId);
-        Assert.Equal("Mi Anime", anidb.SeriesTitle);
-        Assert.Equal(2019, anidb.SeriesYear);
+        Assert.Equal(21, anilist.AniListId);
+        Assert.Equal("Mi Anime", anilist.SeriesTitle);
+        Assert.Equal(2019, anilist.SeriesYear);
+
+        // La etiqueta de AniDB (fase 2) se quita del título y su id se descarta.
+        Assert.Null(anidb.AniListId);
+        Assert.Equal("Otro Anime", anidb.SeriesTitle);
     }
 
     [Theory]

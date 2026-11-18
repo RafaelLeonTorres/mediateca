@@ -71,7 +71,9 @@ public static class LibraryEndpoints
         if (!string.IsNullOrWhiteSpace(search))
         {
             var pattern = $"%{EscapeLike(search.Trim())}%";
-            query = query.Where(i => EF.Functions.ILike(i.Title, pattern));
+            // También por el título original (romaji): los metadatos reemplazan el título por el de inglés.
+            query = query.Where(i => EF.Functions.ILike(i.Title, pattern) ||
+                                     (i.OriginalTitle != null && EF.Functions.ILike(i.OriginalTitle, pattern)));
         }
 
         if (!string.IsNullOrWhiteSpace(genre))

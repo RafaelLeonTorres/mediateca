@@ -29,6 +29,13 @@ internal sealed class MediaItemConfiguration : IEntityTypeConfiguration<MediaIte
         builder.Property(m => m.ImdbId).HasMaxLength(20);
         builder.Property(m => m.MetadataStatus).HasConversion<string>().HasMaxLength(20);
 
+        // Metadatos de un proveedor (fase 4). Genres, Studios, Tags, Directors y Actors son text[] por convención.
+        builder.Property(m => m.OriginalTitle).HasMaxLength(500);
+        builder.Property(m => m.Status).HasConversion<string>().HasMaxLength(20);
+        builder.Property(m => m.MetadataMessage).HasMaxLength(500);
+        builder.Property(m => m.ScanKey).HasMaxLength(600);
+        builder.Property(m => m.ExternalLinksJson).HasColumnType("jsonb");
+
         builder.HasOne(m => m.Library)
             .WithMany()
             .HasForeignKey(m => m.LibraryId)
@@ -42,6 +49,8 @@ internal sealed class MediaItemConfiguration : IEntityTypeConfiguration<MediaIte
         builder.HasIndex(m => m.Title).HasMethod("gin").HasOperators("gin_trgm_ops");
         // "Agregado recientemente" por biblioteca.
         builder.HasIndex(m => new { m.LibraryId, m.DateAdded });
+        // La cola de metadatos y los contadores de la administración filtran por estado.
+        builder.HasIndex(m => new { m.LibraryId, m.MetadataStatus });
     }
 }
 

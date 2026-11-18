@@ -44,8 +44,6 @@ services:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       ConnectionStrings__Default: "Host=db;Port=5432;Database=mediateca;Username=mediateca;Password=${POSTGRES_PASSWORD}"
       Metadata__Omdb__ApiKey: ${OMDB_API_KEY:-}
-      Metadata__AniDb__Client: ${ANIDB_CLIENT:-}
-      Metadata__AniDb__ClientVersion: ${ANIDB_CLIENT_VERSION:-1}
       # Horario inicial del escaneo automático; después se cambia desde la administración.
       Scanning__DefaultCron: "${SCAN_CRON:-0 0 3 * * ?}"
     ports:
@@ -84,6 +82,8 @@ services:
       TZ: ${TZ:-America/Mexico_City}
       ConnectionStrings__Default: "Host=db;Port=5432;Database=mediateca;Username=mediateca;Password=${POSTGRES_PASSWORD}"
       Scanning__DefaultCron: "${SCAN_CRON:-0 0 3 * * ?}"
+      # El worker es quien busca los metadatos de la cola, así que también necesita la clave.
+      Metadata__Omdb__ApiKey: ${OMDB_API_KEY:-}
     volumes:
       - appdata:/data
       # La misma carpeta de medios (y, por el override, los mismos discos) que ve la API, de solo lectura.

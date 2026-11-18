@@ -1,7 +1,9 @@
+using Mediateca.Core.Metadata;
 using Mediateca.Core.Scanning;
 using Mediateca.Core.Subtitles;
 using Mediateca.Infrastructure.Identity;
 using Mediateca.Infrastructure.Libraries;
+using Mediateca.Infrastructure.Metadata;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Scanning;
 using Mediateca.Infrastructure.Storage;
@@ -88,6 +90,67 @@ public static class DependencyInjection
     }
 
     /// <summary>
+    /// Los proveedores de metadatos (AniList y OMDb), la caché de respuestas, la descarga de imágenes y el servicio
+    /// que aplica los metadatos a un elemento. Lo usan la API (Identificar, Actualizar) y el worker (la cola). Sin
+    /// <c>Metadata:Omdb:ApiKey</c> OMDb queda desactivado, sin errores. Los clientes HTTP tienen nombre para que las
+    /// pruebas les pongan un manejador falso; el de OMDb no escribe las direcciones en el registro porque llevan la clave.
+    /// </summary>
+    public static IServiceCollection AddMetadataProviders(this IServiceCollection services)
+    {
+        services.AddOptions<MetadataOptions>().BindConfiguration(MetadataOptions.Section);
+        services.TryAddSingleton(TimeProvider.System);
+
+        services.AddHttpClient(HttpClientNames.AniList, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mediateca/1.0");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        });
+        services.AddHttpClient(HttpClientNames.Omdb, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mediateca/1.0");
+            })
+            .RemoveAllLoggers();
+        services.AddHttpClient(HttpClientNames.Images, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mediateca/1.0");
+            })
+            // Sin redirecciones: la dirección ya se validó y una redirección podría llevar a otro servidor.
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+
+        // Se puede llamar varias veces (la API, el worker y las pruebas lo hacen): nada se registra dos veces.
+        services.TryAddSingleton<IMetadataCache, MetadataCacheStore>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IMetadataProvider, AniListProvider>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IMetadataProvider, OmdbProvider>());
+        services.TryAddSingleton<ImageDownloader>();
+        services.TryAddSingleton<ProviderStatusService>();
+        services.TryAddScoped<MetadataService>();
+        return services;
+    }
+
+    /// <summary>
+    /// La cola de metadatos y el refresco de las series en emisión, sin el servicio en segundo plano. Las pruebas de
+    /// integración los registran solos para correr la cola cuando quieren; el worker usa <see cref="AddMetadataProcessing"/>.
+    /// </summary>
+    public static IServiceCollection AddMetadataQueue(this IServiceCollection services)
+    {
+        services.AddMetadataProviders();
+        services.TryAddSingleton<MetadataQueueRunner>();
+        services.TryAddSingleton<MetadataRefreshService>();
+        return services;
+    }
+
+    /// <summary>Lo que corre la cola de metadatos en el worker: la cola y su servicio en segundo plano. El refresco lo programa Quartz.</summary>
+    public static IServiceCollection AddMetadataProcessing(this IServiceCollection services)
+    {
+        services.AddMetadataQueue();
+        services.AddHostedService<MetadataQueueProcessor>();
+        return services;
+    }
+
+    /// <summary>
     /// Subtítulos de los videos: la configuración de ffprobe y ffmpeg (<c>Media</c>), el ejecutor de procesos y el
     /// servicio que lista y convierte las pistas. Solo lo usa la API. El ejecutor se registra con
     /// <c>TryAdd</c>: las pruebas ponen su propio doble antes y no dependen de que FFmpeg esté instalado.
@@ -104,7 +167,7 @@ public static class DependencyInjection
     /// <summary>
     /// Lo de la API: persistencia, Identity, las llaves de Data Protection y los servicios de
     /// bibliotecas. No registra el procesador de escaneos: eso es del worker (<see cref="AddScanProcessing"/>).
-    /// En las siguientes fases se agregan aquí los proveedores de metadatos.
+    /// Registra también los proveedores de metadatos (<see cref="AddMetadataProviders"/>), para Identificar y Actualizar.
     /// </summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
@@ -138,6 +201,7 @@ public static class DependencyInjection
         services.AddSingleton<FolderBrowser>();
         services.AddScanRequests();
         services.AddSubtitles();
+        services.AddMetadataProviders();
 
         return services;
     }

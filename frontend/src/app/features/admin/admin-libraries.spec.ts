@@ -4,7 +4,7 @@ import { ApplicationRef } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 
-import type { AdminLibrary, ScanJob, ScanSchedule } from '../../core/admin/admin-api';
+import type { AdminLibrary, MetadataSummary, ScanJob, ScanSchedule } from '../../core/admin/admin-api';
 import { AdminLibraries } from './admin-libraries';
 
 const job = (status: ScanJob['status'], createdAt: string): ScanJob => ({
@@ -21,7 +21,10 @@ const job = (status: ScanJob['status'], createdAt: string): ScanJob => ({
   errorMessage: null,
 });
 
-const library = (lastScan: ScanJob | null): AdminLibrary => ({
+const library = (
+  lastScan: ScanJob | null,
+  metadata: MetadataSummary | null = null,
+): AdminLibrary => ({
   id: 'l1',
   name: 'Cine',
   type: 'Movies',
@@ -31,6 +34,20 @@ const library = (lastScan: ScanJob | null): AdminLibrary => ({
   lastScannedAt: null,
   itemCount: 3,
   lastScan,
+  metadata,
+});
+
+const omdb = (extra: Partial<MetadataSummary> = {}): MetadataSummary => ({
+  provider: 'omdb',
+  providerName: 'OMDb',
+  pending: 0,
+  matched: 2,
+  notFound: 1,
+  error: 0,
+  configured: true,
+  pausedUntil: null,
+  message: null,
+  ...extra,
 });
 
 /** Deja correr lo pendiente (promesas y la continuación de un await) antes de seguir. */
@@ -181,5 +198,73 @@ describe('AdminLibraries', () => {
 
     expect(text()).toContain('En espera…');
     expect(text()).not.toContain('El escaneo sigue en cola.');
+  });
+  describe('metadatos', () => {
+    it('sin proveedor (música) no muestra la sección', async () => {
+      const { load, element } = render();
+      await load([library(null)]);
+      expect(element.querySelector('.metadata')).toBeNull();
+    });
+
+    it('muestra cuántos elementos hay en cada estado', async () => {
+      const { load, text } = render();
+      await load([library(null, omdb({ pending: 4, error: 1 }))]);
+
+      expect(text()).toContain('Metadatos (OMDb)');
+      expect(text()).toContain('2 encontrados');
+      expect(text()).toContain('4 pendientes');
+      expect(text()).toContain('1 sin resultado');
+      expect(text()).toContain('1 con error');
+    });
+
+    it('avisa que falta la clave de OMDb y desactiva "Buscar metadatos"', async () => {
+      const { load, text, buttonNamed } = render();
+      await load([
+        library(null, omdb({ configured: false, message: 'Falta la clave de OMDb (OMDB_API_KEY).' })),
+      ]);
+
+      expect(text()).toContain('Falta la clave de OMDb');
+      expect(buttonNamed('Buscar metadatos').disabled).toBe(true);
+    });
+
+    it('avisa si el proveedor está en pausa', async () => {
+      const { load, text } = render();
+      await load([library(null, omdb({ pausedUntil: '2026-11-18T00:01:00Z' }))]);
+      expect(text()).toContain('OMDb está en pausa');
+    });
+
+    it('"Buscar metadatos" pide la cola, muestra el mensaje y vuelve a pedir la lista', async () => {
+      const { http, load, settle, text, buttonNamed } = render();
+      await load([library(null, omdb({ pending: 3 }))]);
+
+      buttonNamed('Buscar metadatos').click();
+      http
+        .expectOne('/api/admin/libraries/l1/metadata/fetch')
+        .flush({ queued: 3, configured: true, message: null }, { status: 202, statusText: 'Accepted' });
+
+      // Con la respuesta, la pantalla muestra el aviso y recarga la lista. La recarga se responde antes
+      // de esperar a que la app quede estable: mientras una petición está pendiente, no lo está.
+      await nextMacrotask();
+      TestBed.tick();
+      http.expectOne('/api/admin/libraries').flush([library(null, omdb({ pending: 3 }))]);
+      await TestBed.inject(ApplicationRef).whenStable();
+      await settle();
+
+      expect(text()).toContain('Se pusieron en cola 3 elementos.');
+    });
+
+    it('si la petición falla, muestra el mensaje de la API', async () => {
+      const { http, load, settle, element, buttonNamed } = render();
+      await load([library(null, omdb())]);
+
+      buttonNamed('Buscar metadatos').click();
+      http
+        .expectOne('/api/admin/libraries/l1/metadata/fetch')
+        .flush({ title: 'Falta la clave de OMDb.' }, { status: 409, statusText: 'Conflict' });
+      await nextMacrotask();
+      await settle();
+
+      expect(element.querySelector('[role="alert"]')!.textContent).toContain('Falta la clave de OMDb.');
+    });
   });
 });

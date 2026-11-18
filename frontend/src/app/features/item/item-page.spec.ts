@@ -5,6 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 
 import type { ChildItem, ItemDetail, ItemKind, ResumeItem } from '../../core/items/items-api';
+import { SessionStore } from '../../core/auth/session-store';
 import { PlayerService, type QueueTrack } from '../../core/playback/player-service';
 import { ItemPage } from './item-page';
 
@@ -48,6 +49,21 @@ describe('ItemPage', () => {
       positionSeconds: 0,
       played: false,
       unplayedCount: null,
+      originalTitle: null,
+      endYear: null,
+      status: null,
+      studios: [],
+      tags: [],
+      directors: [],
+      actors: [],
+      runtimeMinutes: null,
+      hasBackdrop: false,
+      links: [],
+      nextAiringAt: null,
+      nextAiringEpisode: null,
+      metadataUpdatedAt: null,
+      metadataStatus: null,
+      metadataMessage: null,
       ...extra,
     };
   }
@@ -94,7 +110,12 @@ describe('ItemPage', () => {
    * Muestra el elemento x1 con esos hijos y ese "A continuación" (null: la API respondió 204). Responde
    * todas las solicitudes antes de esperar: `whenStable` espera a las que siguen pendientes.
    */
-  async function render(item: ItemDetail, children: ChildItem[] = [], nextUp: ResumeItem | null = null) {
+  async function render(
+    item: ItemDetail,
+    children: ChildItem[] = [],
+    nextUp: ResumeItem | null = null,
+    isAdmin = false,
+  ) {
     TestBed.configureTestingModule({
       imports: [ItemPage],
       providers: [
@@ -103,6 +124,12 @@ describe('ItemPage', () => {
         provideHttpClientTesting(),
         { provide: PlayerService, useValue: player },
       ],
+    });
+    TestBed.inject(SessionStore).user.set({
+      id: 'u1',
+      userName: 'ana',
+      displayName: 'Ana',
+      isAdmin,
     });
     const fixture = TestBed.createComponent(ItemPage);
     fixture.componentRef.setInput('id', 'x1');
@@ -425,5 +452,89 @@ describe('ItemPage', () => {
         imageId: null,
       },
     ]);
+  });
+  describe('metadatos', () => {
+    it('una serie y una película usan la cabecera; un episodio, no', async () => {
+      const series = await render(detail('Series', 'Mi Anime', { hasBackdrop: true }));
+      expect(series.element.querySelector('app-item-hero')).not.toBeNull();
+      expect(series.element.querySelector('app-item-hero .backdrop')).not.toBeNull();
+      TestBed.resetTestingModule();
+
+      const movie = await render(detail('Movie', 'Heat'));
+      expect(movie.element.querySelector('app-item-hero')).not.toBeNull();
+      expect(buttonWithText(movie.element, 'Reproducir')).toBeDefined();
+      TestBed.resetTestingModule();
+
+      const episode = await render(detail('Episode', 'Episodio 1'));
+      expect(episode.element.querySelector('app-item-hero')).toBeNull();
+    });
+
+    it('muestra el título original y los botones de siempre dentro de la cabecera', async () => {
+      const { element } = await render(
+        detail('Series', 'Mi Anime', { originalTitle: 'Boku no Anime', played: false, unplayedCount: 3 }),
+      );
+      expect(element.querySelector('app-item-hero .original')!.textContent).toContain('Boku no Anime');
+      expect(element.querySelectorAll('h1').length).toBe(1);
+      expect(buttonWithText(element, 'Marcar como visto')).toBeDefined();
+    });
+
+    it('un usuario común no ve Identificar ni Actualizar metadatos', async () => {
+      const { element } = await render(detail('Series', 'Mi Anime'));
+      expect(buttonWithText(element, 'Identificar')).toBeUndefined();
+      expect(buttonWithText(element, 'Actualizar metadatos')).toBeUndefined();
+    });
+
+    it('un administrador ve los dos botones en series y películas, pero no en episodios', async () => {
+      const series = await render(detail('Series', 'Mi Anime'), [], null, true);
+      expect(buttonWithText(series.element, 'Identificar')).toBeDefined();
+      expect(buttonWithText(series.element, 'Actualizar metadatos')).toBeDefined();
+      TestBed.resetTestingModule();
+
+      const episode = await render(detail('Episode', 'Episodio 1'), [], null, true);
+      expect(buttonWithText(episode.element, 'Identificar')).toBeUndefined();
+    });
+
+    it('Actualizar metadatos pide la actualización y vuelve a pedir el detalle', async () => {
+      const { fixture, http, element } = await render(detail('Movie', 'Heat'), [], null, true);
+
+      (buttonWithText(element, 'Actualizar metadatos') as HTMLButtonElement).click();
+      http
+        .expectOne('/api/admin/items/x1/metadata/refresh')
+        .flush({ status: 'Matched', message: null, title: 'Heat' });
+      await settle();
+      TestBed.tick();
+      fixture.detectChanges();
+
+      http.expectOne('/api/items/x1').flush(detail('Movie', 'Heat', { year: 1995 }));
+      await settle();
+      http.verify();
+    });
+
+    it('si la actualización falla, muestra el mensaje de la API', async () => {
+      const { fixture, http, element } = await render(detail('Movie', 'Heat'), [], null, true);
+
+      (buttonWithText(element, 'Actualizar metadatos') as HTMLButtonElement).click();
+      http
+        .expectOne('/api/admin/items/x1/metadata/refresh')
+        .flush({ title: 'Falta la clave de OMDb.' }, { status: 409, statusText: 'Conflict' });
+      await settle();
+      TestBed.tick();
+      fixture.detectChanges();
+
+      expect(element.querySelector('[role="alert"]')!.textContent).toContain('Falta la clave de OMDb.');
+    });
+
+    it('el administrador ve por qué no hay metadatos; los demás no', async () => {
+      const item = detail('Movie', 'Heat', {
+        metadataStatus: 'NotFound',
+        metadataMessage: 'OMDb no encontró "Heat".',
+      });
+      const admin = await render(item, [], null, true);
+      expect(admin.element.querySelector('.note')!.textContent).toContain('OMDb no encontró');
+      TestBed.resetTestingModule();
+
+      const user = await render(item);
+      expect(user.element.querySelector('.note')).toBeNull();
+    });
   });
 });

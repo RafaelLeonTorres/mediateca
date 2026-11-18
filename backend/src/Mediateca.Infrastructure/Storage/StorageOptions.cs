@@ -23,7 +23,7 @@ public sealed class StorageOptions
     public string DrivesPath { get; set; } = DefaultDrivesRoot;
 
     /// <summary>
-    /// Carpeta de datos de la app: pósters, carátulas y volcado de títulos de AniDB. Si es relativa,
+    /// Carpeta de datos de la app: pósters y fondos descargados de los proveedores de metadatos, y la caché de respuestas. Si es relativa,
     /// se toma desde la carpeta de la API. En Docker es /data (el volumen appdata).
     /// </summary>
     public string DataPath { get; set; } = "data";

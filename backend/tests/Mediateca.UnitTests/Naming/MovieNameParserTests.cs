@@ -46,7 +46,7 @@ public class MovieNameParserTests
         Assert.Equal(titulo, resultado.Title);
         Assert.Equal(año, resultado.Year);
         Assert.Equal(imdb, resultado.ImdbId);
-        Assert.Null(resultado.AniDbId);
+        Assert.Null(resultado.AniListId);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public class MovieNameParserTests
         var resultado = MovieNameParser.Parse("Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4");
 
         Assert.Null(resultado.ImdbId);
-        Assert.Null(resultado.AniDbId);
+        Assert.Null(resultado.AniListId);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using Mediateca.Api.Metadata;
 using Mediateca.Core.Libraries;
 using Mediateca.Core.Scanning;
 
@@ -34,7 +35,7 @@ public sealed record ScanScheduleRequest(bool? Enabled, string? CronExpression);
 /// <summary>
 /// Biblioteca para el administrador: con sus carpetas, la cantidad de elementos y el último escaneo.
 /// <c>Paths</c> son las rutas del contenedor; <c>DisplayPaths</c> son las mismas, en el mismo orden, como
-/// se muestran al usuario (F:\Peliculas).
+/// se muestran al usuario (F:\Peliculas). <c>Metadata</c> son los contadores de metadatos (nulo en música).
 /// </summary>
 public sealed record AdminLibraryResponse(
     Guid Id,
@@ -45,7 +46,8 @@ public sealed record AdminLibraryResponse(
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastScannedAt,
     int ItemCount,
-    ScanJobResponse? LastScan);
+    ScanJobResponse? LastScan,
+    MetadataSummary? Metadata = null);
 
 /// <summary>Biblioteca para cualquier usuario. No incluye las carpetas del servidor.</summary>
 public sealed record LibraryResponse(Guid Id, string Name, LibraryType Type, int ItemCount);

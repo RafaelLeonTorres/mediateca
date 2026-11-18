@@ -17,7 +17,7 @@ public sealed record ParsedEpisode(
     int? AbsoluteNumber,
     string? EpisodeTitle,
     string? ImdbId,
-    int? AniDbId,
+    int? AniListId,
     string? Group = null);
 
 /// <summary>
@@ -164,7 +164,7 @@ public static class EpisodeNameParser
             hit?.Absolute,
             episodeTitle,
             folder?.ImdbId ?? file.ImdbId,
-            folder?.AniDbId ?? file.AniDbId,
+            folder?.AniListId ?? file.AniListId,
             group);
     }
 

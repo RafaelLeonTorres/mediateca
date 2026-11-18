@@ -1,6 +1,8 @@
+import { NgTemplateOutlet } from '@angular/common';
 import { Component, computed, inject, input, linkedSignal, signal } from '@angular/core';
 import { MatButton, MatIconButton } from '@angular/material/button';
 import { MatChipSet, MatChip } from '@angular/material/chips';
+import { MatDialog } from '@angular/material/dialog';
 import { MatIcon } from '@angular/material/icon';
 import { MatProgressBar } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
@@ -12,6 +14,8 @@ import {
   type ItemDetail,
   type ItemKind,
 } from '../../core/items/items-api';
+import { SessionStore } from '../../core/auth/session-store';
+import { MetadataApi, describeMetadataError } from '../../core/metadata/metadata-api';
 import { PlaybackApi } from '../../core/playback/playback-api';
 import { PlayerService, type QueueTrack } from '../../core/playback/player-service';
 import {
@@ -24,6 +28,8 @@ import {
 } from '../../shared/item-display';
 import { PosterCard } from '../../shared/poster-card/poster-card';
 import { ResumeCard } from '../../shared/resume-card/resume-card';
+import { IdentifyDialog } from './identify-dialog';
+import { ItemHero } from './item-hero';
 
 /** Tipos de elemento que tienen hijos (temporadas, episodios, pistas). */
 const KINDS_WITH_CHILDREN: readonly ItemKind[] = ['Series', 'Season', 'MusicAlbum'];
@@ -48,6 +54,8 @@ const KINDS_WITH_PLAYED: readonly ItemKind[] = ['Movie', 'Episode', 'Series', 'S
     MatIcon,
     MatIconButton,
     MatProgressBar,
+    NgTemplateOutlet,
+    ItemHero,
     PosterCard,
     ResumeCard,
     RouterLink,
@@ -78,6 +86,59 @@ const KINDS_WITH_PLAYED: readonly ItemKind[] = ['Movie', 'Episode', 'Series', 'S
         </ol>
       </nav>
 
+        <ng-template #actionsTpl>
+          @if (playTarget(); as target) {
+            <a matButton="filled" [routerLink]="['/reproducir', target.id]">
+              <mat-icon aria-hidden="true">play_arrow</mat-icon>
+              {{ playLabel() }}
+            </a>
+          }
+          @if (current.kind === 'MusicAlbum') {
+            <button
+              matButton="filled"
+              type="button"
+              [disabled]="tracks().length === 0"
+              (click)="playAlbum(0)"
+            >
+              <mat-icon aria-hidden="true">play_arrow</mat-icon>
+              Reproducir álbum
+            </button>
+          }
+          @if (current.kind === 'Track') {
+            <button matButton="filled" type="button" (click)="playSingleTrack(current)">
+              <mat-icon aria-hidden="true">play_arrow</mat-icon>
+              Reproducir
+            </button>
+          }
+          @if (canMarkPlayed()) {
+            <button matButton="outlined" type="button" [disabled]="marking()" (click)="togglePlayed()">
+              <mat-icon aria-hidden="true">{{ isPlayed() ? 'visibility_off' : 'check_circle' }}</mat-icon>
+              {{ isPlayed() ? 'Marcar como no visto' : 'Marcar como visto' }}
+            </button>
+          }
+          @if (isAdmin() && (current.kind === 'Series' || current.kind === 'Movie')) {
+            <button matButton="outlined" type="button" [disabled]="busy()" (click)="identify(current)">
+              <mat-icon aria-hidden="true">manage_search</mat-icon>
+              Identificar
+            </button>
+            <button matButton="outlined" type="button" [disabled]="busy()" (click)="refreshMetadata(current)">
+              <mat-icon aria-hidden="true">refresh</mat-icon>
+              Actualizar metadatos
+            </button>
+          }
+        </ng-template>
+
+      @if (usesHero(current)) {
+        <app-item-hero [item]="current">
+          <ng-container [ngTemplateOutlet]="actionsTpl" />
+        </app-item-hero>
+        @if (actionError()) {
+          <p class="error" role="alert">{{ actionError() }}</p>
+        }
+        @if (isAdmin() && metadataNote(current); as note) {
+          <p class="note">{{ note }}</p>
+        }
+      } @else {
       <article class="detail" [class.wide]="current.kind === 'Episode'">
         <div class="poster">
           @if (current.hasImage && !imageFailed()) {
@@ -107,38 +168,13 @@ const KINDS_WITH_PLAYED: readonly ItemKind[] = ['Movie', 'Episode', 'Series', 'S
           }
 
           <div class="actions">
-            @if (playTarget(); as target) {
-              <a matButton="filled" [routerLink]="['/reproducir', target.id]">
-                <mat-icon aria-hidden="true">play_arrow</mat-icon>
-                {{ playLabel() }}
-              </a>
-            }
-            @if (current.kind === 'MusicAlbum') {
-              <button
-                matButton="filled"
-                type="button"
-                [disabled]="tracks().length === 0"
-                (click)="playAlbum(0)"
-              >
-                <mat-icon aria-hidden="true">play_arrow</mat-icon>
-                Reproducir álbum
-              </button>
-            }
-            @if (current.kind === 'Track') {
-              <button matButton="filled" type="button" (click)="playSingleTrack(current)">
-                <mat-icon aria-hidden="true">play_arrow</mat-icon>
-                Reproducir
-              </button>
-            }
-            @if (canMarkPlayed()) {
-              <button matButton="outlined" type="button" [disabled]="marking()" (click)="togglePlayed()">
-                <mat-icon aria-hidden="true">{{ isPlayed() ? 'visibility_off' : 'check_circle' }}</mat-icon>
-                {{ isPlayed() ? 'Marcar como no visto' : 'Marcar como visto' }}
-              </button>
-            }
+            <ng-container [ngTemplateOutlet]="actionsTpl" />
           </div>
           @if (actionError()) {
             <p class="error" role="alert">{{ actionError() }}</p>
+          }
+          @if (isAdmin() && metadataNote(current); as note) {
+            <p class="note">{{ note }}</p>
           }
 
           @if (current.overview) {
@@ -146,6 +182,7 @@ const KINDS_WITH_PLAYED: readonly ItemKind[] = ['Movie', 'Episode', 'Series', 'S
           }
         </div>
       </article>
+      }
 
       @if (hasChildren()) {
         @if (children.isLoading()) {
@@ -359,6 +396,16 @@ const KINDS_WITH_PLAYED: readonly ItemKind[] = ['Movie', 'Episode', 'Series', 'S
       color: var(--mat-sys-error);
     }
 
+    .note {
+      margin: 8px 0 0;
+      font: var(--mat-sys-body-medium);
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    app-item-hero {
+      margin-bottom: 24px;
+    }
+
     .next {
       max-width: 360px;
     }
@@ -507,6 +554,9 @@ export class ItemPage {
   private readonly api = inject(ItemsApi);
   private readonly playback = inject(PlaybackApi);
   private readonly player = inject(PlayerService);
+  private readonly metadata = inject(MetadataApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly session = inject(SessionStore);
 
   protected readonly detail = this.api.detail(() => this.id());
   // En Angular 22, value() de un recurso con error lanza: se lee solo cuando hay valor.
@@ -598,6 +648,12 @@ export class ItemPage {
     return item.kind === 'Series' || item.kind === 'Season' ? item.unplayedCount === 0 : item.played;
   });
 
+  /** El usuario es administrador: ve Identificar y Actualizar metadatos. */
+  protected readonly isAdmin = computed(() => this.session.user()?.isAdmin === true);
+
+  /** Se está identificando o actualizando: los botones esperan. */
+  protected readonly busy = signal(false);
+
   /** Se está actualizando lo visto: los botones esperan. */
   protected readonly marking = signal(false);
 
@@ -652,6 +708,71 @@ export class ItemPage {
     }
     return parts.join(' · ');
   });
+
+  /** Series y películas llevan la cabecera con imagen de fondo; lo demás, la ficha sencilla. */
+  protected usesHero(item: ItemDetail): boolean {
+    return item.kind === 'Series' || item.kind === 'Movie';
+  }
+
+  /** Nota para el administrador cuando los metadatos no se pudieron obtener. */
+  protected metadataNote(item: ItemDetail): string | null {
+    if (item.kind !== 'Series' && item.kind !== 'Movie') {
+      return null;
+    }
+    switch (item.metadataStatus) {
+      case 'NotFound':
+        return item.metadataMessage ?? 'No se encontraron metadatos. Usa Identificar para elegirlos.';
+      case 'Error':
+        return item.metadataMessage ?? 'No se pudieron obtener los metadatos.';
+      case 'Pending':
+        return 'Los metadatos están en la cola.';
+      default:
+        return null;
+    }
+  }
+
+  /** Abre el diálogo para elegir a mano qué serie o película es; si se aplicó algo, vuelve a pedir la ficha. */
+  protected async identify(item: ItemDetail): Promise<void> {
+    const applied = await new Promise<boolean | undefined>((resolve) => {
+      this.dialog
+        .open(IdentifyDialog, {
+          data: { id: item.id, title: item.title, year: item.year },
+          width: '640px',
+          maxWidth: '95vw',
+        })
+        .afterClosed()
+        .subscribe(resolve);
+    });
+    if (applied) {
+      this.reloadAll();
+    }
+  }
+
+  /** Vuelve a pedir los metadatos al proveedor, con el id que ya tiene la serie o película. */
+  protected async refreshMetadata(item: ItemDetail): Promise<void> {
+    if (this.busy()) {
+      return;
+    }
+    this.busy.set(true);
+    this.actionError.set(null);
+    try {
+      const outcome = await this.metadata.refresh(item.id);
+      if (outcome.status === 'NotFound') {
+        this.actionError.set(outcome.message ?? 'No se encontraron metadatos.');
+      }
+      this.reloadAll();
+    } catch (error) {
+      this.actionError.set(describeMetadataError(error));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private reloadAll(): void {
+    this.detail.reload();
+    this.children.reload();
+    this.nextUp.reload();
+  }
 
   protected image(id: string): string {
     return imageUrl(id);

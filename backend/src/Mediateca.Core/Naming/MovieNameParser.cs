@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace Mediateca.Core.Naming;
 
 /// <summary>Título y año de una película, y los identificadores que traía el nombre.</summary>
-public sealed record ParsedMovie(string Title, int? Year, string? ImdbId, int? AniDbId);
+public sealed record ParsedMovie(string Title, int? Year, string? ImdbId, int? AniListId);
 
 /// <summary>
 /// Película: <c>Nombre (Año)/archivo.ext</c> o <c>Nombre (Año).ext</c>. Recibe la ruta relativa a la
@@ -42,7 +42,7 @@ public static class MovieNameParser
             title,
             chosen.Year,
             folder?.ImdbId ?? file.ImdbId,
-            folder?.AniDbId ?? file.AniDbId);
+            folder?.AniListId ?? file.AniListId);
     }
 
     private static bool IsGeneric(string title) =>

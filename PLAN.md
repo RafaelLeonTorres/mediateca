@@ -145,14 +145,14 @@ erDiagram
 | Entidad | Campos principales |
 |---|---|
 | `Library` | Id, Name, Type (`Movies`, `Series`, `Anime`, `Music`), Paths (`text[]`), CreatedAt, LastScannedAt |
-| `MediaItem` (abstracta) | Id, LibraryId, ParentId, Title, SortTitle, Year, Overview, ContentRating, CommunityRating, Genres (`text[]`), ImdbId, AniListId, PosterPath, DateAdded, MetadataStatus (`Pending`, `Matched`, `NotFound`, `Error`) |
+| `MediaItem` (abstracta) | Id, LibraryId, ParentId, Title, OriginalTitle, SortTitle, Year, EndYear, Status (`Finished`, `Airing`, `Upcoming`, `Cancelled`, `Hiatus`), Overview, ContentRating, CommunityRating, Genres, Studios, Tags, Directors, Actors (`text[]`), RuntimeMinutes, ImdbId, AniListId, MalId, PosterPath, BackdropPath, ExternalLinksJson (`jsonb`), NextAiringAt, NextAiringEpisode, MetadataStatus (`Pending`, `Matched`, `NotFound`, `Error`), MetadataMessage, MetadataUpdatedAt, ScanKey, DateAdded |
 | `PlayableItem` (abstracta, hereda de `MediaItem`) | FilePath, FileSize, FileModifiedAt, DurationSeconds |
 | `Movie`, `Episode`, `Track` | heredan de `PlayableItem`. Episode: SeasonNumber, EpisodeNumber, AbsoluteNumber. Track: TrackNumber, DiscNumber, Artist |
 | `Series`, `Season`, `MusicAlbum` | heredan de `MediaItem`. Season: SeasonNumber. MusicAlbum: AlbumArtist |
 | `AppUser` | `IdentityUser<Guid>` + DisplayName, CreatedAt |
 | `UserLibraryAccess` | UserId, LibraryId (llave compuesta) |
 | `UserItemData` | UserId, ItemId, PositionSeconds, Played, LastPlayedAt (llave compuesta) |
-| `MetadataCache` | Provider, ExternalId, Payload (`jsonb`), FetchedAt (llave compuesta Provider + ExternalId) |
+| `MetadataCache` | Provider, ExternalId, Payload (`jsonb`), FetchedAt (llave compuesta Provider + ExternalId). También guarda las pausas de los proveedores (proveedor `state`, clave `{proveedor}-pause`) para que la API las muestre |
 | `ScanJob` | Id, LibraryId, Status (`Queued`, `Running`, `Completed`, `Failed`), CreatedAt, StartedAt, FinishedAt, Added, Updated, Removed, Errors, ErrorMessage. Es también la cola de escaneos |
 | `ScanSchedule` | Id (siempre 1), Enabled, CronExpression, UpdatedAt: el horario del escaneo automático |
 
@@ -161,6 +161,8 @@ Detalles que vale la pena mostrar en el portafolio:
 - **Herencia TPH** (una tabla con discriminador) para todos los tipos de `MediaItem`: así una sola consulta sirve para búsquedas, "Agregado recientemente" y "Continuar viendo".
 - **Tipos de PostgreSQL:** `text[]` para las rutas de las bibliotecas y los géneros, y `jsonb` para la caché de metadatos.
 - **Búsqueda rápida:** la extensión `pg_trgm` con un índice GIN sobre `Title` acelera los `ILIKE '%texto%'` (`HasPostgresExtension("pg_trgm")` e índice con `gin_trgm_ops`).
+- **`ScanKey`:** la identidad con que el escaneo reconoce una serie (`título|año` de la carpeta). Los metadatos pueden cambiar `Title` y `Year`, pero no la `ScanKey`, y así un nuevo escaneo no duplica la serie.
+- **Índice** en (LibraryId, MetadataStatus) para contar y recorrer la cola de metadatos.
 - **Índice único** en (LibraryId, FilePath) para que un archivo no se registre dos veces.
 - **Índice único parcial** en `ScanJob` (`IX_ScanJobs_LibraryId_Active`): sobre `LibraryId`, solo para los estados `Queued` y `Running`. La base de datos garantiza un escaneo activo por biblioteca, sin candados en la aplicación.
 
@@ -234,7 +236,7 @@ Convenciones de nombres:
 | Anime | `Serie/… - NN` o `Serie/NN.ext` (número absoluto), o `SxxEyy`; se ignoran las etiquetas entre corchetes | `Anime/Mi Anime/[Grupo] Mi Anime - 05 [1080p].mkv` o `Anime/Mi Anime/Lat/05.mp4` |
 | Música | `Artista/Álbum/NN - Canción`, completado con las etiquetas del archivo | `Música/Artista/Álbum (2020)/01 - Canción.flac` |
 
-- Etiquetas opcionales en el nombre de la carpeta para no depender de la búsqueda: `[imdbid-tt0118799]` y `[anilistid-21]` (en la fase 4 reemplaza a `[anidbid-23]`).
+- Etiquetas opcionales en el nombre de la carpeta para no depender de la búsqueda: `[imdbid-tt0118799]` y `[anilistid-21]` (reemplaza a `[anidbid-23]`, que se reconoce y se descarta).
 - **Carpetas dentro de una serie:**
   - Una carpeta de temporada (`Temporada 01`, `Season 2`, `Especiales`) es esa temporada.
   - Cualquier otra carpeta dentro de la serie se muestra con su nombre tal cual, como una temporada sin número con sus propios episodios, igual que en Jellyfin. Por ejemplo, `Lat` y `Sub` con los mismos episodios en dos idiomas.
@@ -242,7 +244,9 @@ Convenciones de nombres:
 - **Especiales:** `Especial01`, `Special 2`, `SP03` u `OVA 1` en el nombre del archivo van a la temporada 0 ("Especiales"). Si están dentro de una carpeta, se quedan en ella.
 - **Imágenes junto a los medios**, con los nombres con que Jellyfin las guarda junto a los videos:
   - `poster`, `folder` o `cover` (`.jpg`, `.jpeg` o `.png`) es el póster de la serie, la película o el álbum. Cada carpeta de la serie usa el suyo o, si no tiene, el de la serie.
+  - `backdrop`, `fanart` o `background` (`.jpg`, `.jpeg` o `.png`) es la imagen de fondo de la ficha.
   - `NN-thumb.jpg` (el nombre del video más `-thumb`) es la miniatura del episodio.
+  - Las imágenes locales mandan siempre sobre las del proveedor, y un nuevo escaneo detecta las que se agregan o se quitan.
 - **Volver a escanear** recalcula dónde va cada episodio aunque su archivo no haya cambiado, y lo mueve sin cambiarle el id. Así se acomoda lo que se escaneó con reglas anteriores, sin perder el progreso.
 - Los analizadores de nombres son funciones puras en `Core`, cubiertas con muchas pruebas `[Theory]`.
 
@@ -288,13 +292,16 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 
 ### Implementación
 
-- Interfaz `IMetadataProvider` (`SearchAsync`, `GetDetailsAsync`) con `OmdbProvider` y `AniListProvider`. El proveedor depende del tipo de biblioteca: películas y series usan OMDb, y anime usa AniList, también para las películas de anime que están en esa biblioteca.
-- `HttpClient` tipados con tiempos de espera (`Microsoft.Extensions.Http.Resilience`). AniList tiene un limitador compartido de 1 solicitud cada 2 s (`System.Threading.RateLimiting`, 30 por minuto). Ante un 429, la cola espera lo que diga `Retry-After` antes de seguir.
-- La cola de metadatos la procesa el worker, igual que los escaneos. La API solo consulta a los proveedores cuando el administrador usa Identificar.
-- `MetadataCache` guarda cada respuesta. Si OMDb responde "Daily request limit reached!", la cola de metadatos se pausa hasta el día siguiente.
-- Después de cada escaneo, los elementos `Pending` entran en una cola de metadatos. El estado (`Matched`, `NotFound`, `Error`) se ve en la administración.
-- **Identificar:** un diálogo muestra los resultados de búsqueda del proveedor y permite pegar un ID directamente. **Actualizar metadatos** vuelve a pedir los datos, respetando la caché.
-- **Imágenes:** mandan las que dejó Jellyfin junto a los videos (`folder.jpg`, `backdrop.jpg` y `01-thumb.jpg`). Si no hay, el póster y el fondo del proveedor se descargan una sola vez a `data/images/` y se sirven con cabeceras de caché desde `/api/items/{id}/image`. AniList entrega direcciones completas de sus imágenes.
+- Interfaz `IMetadataProvider` (`SearchAsync`, `GetDetailsAsync`, episodios) con `OmdbProvider` y `AniListProvider`. El proveedor depende del tipo de biblioteca: películas y series usan OMDb, y anime usa AniList, también para las películas de anime que están en esa biblioteca. Una carpeta "Lat" más "Sub" sin otra señal se trata como película.
+- `HttpClient` con nombre (`anilist`, `omdb` e `images`), sin registro de las URL de OMDb (la clave va en la dirección). `ProviderGate` junta el limitador de la API (`System.Threading.RateLimiting`, 1 solicitud cada 2 s para AniList) y la pausa del proveedor. Un 429 pausa según `Retry-After` y **nunca se reintenta** en la misma solicitud.
+- **Puntuación de candidatos** (`CandidateScorer`, función pura en `Core`): similitud del título (romaji, inglés, original y sinónimos, sin año, "Season 2" ni etiquetas) más ajustes por año (+0.20 exacto; −0.08 si difiere en uno; −0.25 si difiere más; +0.12 si la emisión cubre el año), temporada (±0.15), parte (±0.08), película o serie (+0.08 o −0.10) y un poco de reciente (hasta +0.05). Umbral mínimo de similitud 0.60; si hay un único candidato sobre 0.85 se aplica sin dudar. Se hacen como máximo 3 consultas por elemento (el título y variantes).
+- **La cola es la tabla:** elementos `Pending` de nivel superior (series y películas) de las bibliotecas cuyo proveedor está disponible. El worker (`MetadataQueueProcessor`) toma uno a la vez; el resultado queda en `MetadataStatus` (`Matched`, `NotFound` o `Error`) con un mensaje que se ve en la administración. Tras 3 errores seguidos, el proveedor se pausa 5 minutos. Todo se aplica solo cuando ya se tienen todos los datos (incluidos los títulos de episodios): si el límite llega a la mitad, el elemento sigue `Pending`.
+- **Caché y límites:** `MetadataCache` guarda cada respuesta por proveedor e id. Si OMDb responde "Daily request limit reached!", se pausa hasta el día siguiente (UTC); una clave inválida, 10 minutos. Sin clave de OMDb, esas bibliotecas no entran en la cola y la administración lo avisa.
+- **Actualización de series en emisión:** un trabajo de Quartz del worker se revisa cada hora y renueva las series `Matched` con estado `Airing` o `Upcoming` cuyos metadatos tienen más de 24 horas. Nunca degrada un `Matched` a `Error`.
+- **Identificar y Actualizar** se hacen en la solicitud de la API (el administrador está esperando) con su propio limitador; si el proveedor está en pausa responden 429 al instante.
+- **Episodios:** el título del proveedor reemplaza al del escaneo; los especiales (temporada 0) se saltan. Las temporadas heredan el póster de la serie.
+- **Imágenes:** mandan las que dejó Jellyfin junto a los videos (`folder.jpg`, `backdrop.jpg` y `01-thumb.jpg`). Si no hay, el póster y el fondo del proveedor se descargan una sola vez a `data/images/` y se sirven con cabeceras de caché desde `/api/items/{id}/image` (y `?type=backdrop` para el fondo, que si falta busca en la serie). La descarga solo acepta HTTPS desde `anilist.co` y `media-amazon.com`, sin redirecciones, con un máximo de 10 MB y revisando que el archivo sea JPG, PNG o WebP.
+- **Atribución:** la ficha de anime muestra "Datos de AniList" con el enlace a la serie.
 - Los resúmenes de OMDb y AniList llegan en inglés. Para tenerlos en español haría falta agregar TMDb como tercer proveedor (extensión).
 
 ---
@@ -344,7 +351,12 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 | `POST /api/items/{id}/played` · `DELETE /api/items/{id}/played` | usuario | Marcar como visto o no visto; en una serie, temporada o álbum, a todo su contenido |
 | `GET /api/items/{id}/next-up` | usuario | Qué ver a continuación en una serie o temporada (204 si no queda nada) |
 | `GET /api/me/continue-watching?limit=` · `GET /api/me/recently-added` | usuario | Filas de la pantalla de inicio. Continuar viendo devuelve `{ id, kind, title, seriesTitle, parentTitle, imageId, durationSeconds, positionSeconds, lastPlayedAt }` |
-| `GET /api/admin/items/{id}/metadata/search?query=` · `POST /api/admin/items/{id}/metadata/identify` · `POST /api/admin/items/{id}/metadata/refresh` | admin | Identificar y actualizar metadatos |
+| `GET /api/items/{id}/image?type=poster\|backdrop` | usuario | Póster (por omisión) o fondo; 404 si no hay o el tipo no es válido |
+| `POST /api/admin/libraries/{id}/metadata/fetch` | admin | Pone en la cola los elementos `Pending` y los que fallaron (202 con `{ queued, configured, message }`; 409 en música) |
+| `GET /api/admin/items/{id}/metadata/search?query=&year=` | admin | Candidatos del proveedor: `{ provider, providerName, results: [{ externalId, title, originalTitle, year, endYear, format, status, posterUrl, url }] }` |
+| `POST /api/admin/items/{id}/metadata/identify` · `POST /api/admin/items/{id}/metadata/refresh` | admin | Aplicar un id o una dirección (`{ identifier }`) y volver a pedir los datos. Responden `{ status, message, title }`; 400 si el id no es válido, 409 si falta la clave, 429 si el proveedor pide esperar y 502 si falla |
+
+`GET /api/admin/libraries` trae por biblioteca un `metadata` con los conteos (`pending`, `matched`, `notFound`, `error`), el proveedor, si está configurado y hasta cuándo está en pausa. El detalle de un elemento (`GET /api/items/{id}`) incluye título original, años, estado, estudios, etiquetas, enlaces, próxima emisión y, solo para administradores, el estado y el mensaje de los metadatos.
 
 La API se documenta con OpenAPI (`Microsoft.AspNetCore.OpenApi`) y se explora con Scalar en desarrollo.
 
@@ -360,9 +372,9 @@ Pantallas:
 | `/login` | Inicio de sesión |
 | `/` | Inicio: Continuar viendo, Agregado recientemente y Mis bibliotecas |
 | `/bibliotecas/:id` | Cuadrícula de pósters (o de álbumes, en música) con búsqueda, filtros por año y género, y orden |
-| `/items/:id` | Detalle con póster, título, año, clasificación, calificación, géneros y resumen; temporadas y episodios (con barra de avance y marca de visto), o pistas del álbum; botones Reproducir / Continuar desde, Reproducir álbum y Marcar como visto; tarjeta "A continuación" y, para el admin, Identificar |
+| `/items/:id` | Detalle. En series y películas, una cabecera como la de Jellyfin: fondo con degradado oscuro, póster, título y título original, "2026 – Actualidad", estado, ★, 18+, duración, resumen, "Se emite los martes a las 23:00" (calculado en el navegador con `Intl`, en tu zona horaria), géneros, estudios, hasta 10 etiquetas, enlaces externos y "Datos de AniList". Temporadas y episodios (con barra de avance y marca de visto), o pistas del álbum; botones Reproducir / Continuar desde, Reproducir álbum y Marcar como visto; tarjeta "A continuación" y, para el admin, Identificar y Actualizar metadatos |
 | `/reproducir/:id` | Reproductor de video a pantalla completa, fuera del layout (sin barra superior). Retoma donde te quedaste (con aviso y opción de empezar desde el inicio), guarda el avance, ofrece anterior y siguiente dentro de la misma carpeta, pasa solo al siguiente tras una cuenta regresiva de 5 s, y si el navegador no puede reproducir el archivo ofrece descargarlo. Controles propios que se ocultan solos, botón Reescalar (GPU), subtítulos y atajos: espacio o K, flechas ±10 s, M, C y F |
-| `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, y la sección "Escaneo automático" con el horario |
+| `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, conteos de metadatos con "Buscar metadatos" y aviso si falta la clave de OMDb, y la sección "Escaneo automático" con el horario |
 | `/admin/usuarios` | Usuarios, contraseña y casillas de bibliotecas permitidas |
 
 Estructura y prácticas:
@@ -422,7 +434,10 @@ Estructura y prácticas:
   },
   "Metadata": {
     "Omdb":  { "ApiKey": "" },
-    "AniList": { "RequestInterval": "00:00:02" }
+    "AniList": { "RequestInterval": "00:00:02" },
+    "QueuePollInterval": "00:00:05",
+    "AiringRefreshInterval": "1.00:00:00",
+    "RefreshCheckInterval": "01:00:00"
   },
   "Media": { "Ffprobe": "ffprobe", "Ffmpeg": "ffmpeg" }
 }
@@ -433,13 +448,15 @@ Estructura y prácticas:
 - Sección `Scanning`: `DefaultCron` y `DefaultEnabled` son el horario inicial (`SCAN_CRON` en `.env`) y solo cuentan mientras no haya uno guardado; después manda el de la administración. `QueuePollInterval`, `ScheduleSyncInterval` y `MinimumInterval` ajustan cada cuánto mira la cola el worker, cada cuánto revisa si cambió el horario y el mínimo entre dos escaneos automáticos. `TZ` es la zona horaria en la que se interpretan los horarios. `.env.example` documenta cada variable y `.env` no se sube a git.
 - Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`. El worker comparte el mismo `UserSecretsId`, así que los user-secrets (cadena de conexión, `Storage:DataPath` y `Storage:MediaRoots:0`) se definen una vez para los dos.
 - Sección `Media`: `Ffprobe` y `Ffmpeg` son el nombre (si están en el `PATH`) o la ruta completa de cada programa, y por omisión valen `ffprobe` y `ffmpeg`. La imagen de Docker de la API los instala. Fuera de Docker, instálalos aparte; si no están, nada falla: solo se pierden los subtítulos incrustados (se registra un aviso) y los archivos sueltos `.srt`, `.vtt`, `.ass` y `.ssa` siguen funcionando. También se pueden ajustar `MaxConcurrentExtractions` (por omisión 2), `ProbeTimeout` (30 s) y `ExtractionTimeout` (2 min). En Docker, `Media__Ffmpeg` y `Media__Ffprobe` son las variables de entorno equivalentes.
-- Antes de la fase 4, pide tu clave gratuita de OMDb en <https://www.omdbapi.com/apikey.aspx>. AniList no pide cuenta ni clave.
+- Sección `Metadata`: la clave de OMDb (`OMDB_API_KEY` en `.env`; se pide gratis en <https://www.omdbapi.com/apikey.aspx>) y el intervalo de AniList, que no pide cuenta ni clave. `QueuePollInterval` es cada cuánto mira la cola el worker; `AiringRefreshInterval` y `RefreshCheckInterval`, cada cuánto se renuevan las series en emisión y cada cuánto se revisa si toca. La pausa tras 3 errores seguidos (5 minutos) es fija. Las variables de AniDB ya no existen.
 
 ---
 
 ## 15. Fases
 
 Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
+
+**Dónde vamos (18 de noviembre de 2026).** En `main` están las fases 0, 1, 2, 2b, 4, 5, 5b y 5c. La fase 3 (usuarios y permisos) ya está escrita y sus pruebas pasan, pero queda fuera del commit hasta probarla en el navegador. Pendientes sueltos: la barra de música con una biblioteca de música real (fase 5) y trabajar con ramas y pull requests (fase 0). Lo que sigue: probar y cerrar la fase 3, y después la fase 6 (cierre para el portafolio).
 
 ### Fase 0. Base del proyecto
 - [x] Crear `F:\Respaldo\Respaldo\Cursos\JellifinClon` y copiar este `PLAN.md` a la raíz.
@@ -477,10 +494,10 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 ### Fase 2b. Worker y escaneo automático
 - [x] Proyecto `Mediateca.Worker` y cuarto contenedor `worker`: `Dockerfile` con los targets `api` y `worker`, Compose y healthcheck. Los escaneos salen de la API.
 - [x] La cola de escaneos es la tabla `ScanJobs`: reclamo con actualización condicional e índice único parcial (un escaneo activo por biblioteca). Requiere generar la migración `WorkerYHorarioDeEscaneo`.
-- [ ] Escaneo automático con Quartz y horario editable (`ScanSchedule`, `GET` y `PUT /api/admin/scan-schedule`), aplicado por el worker en menos de un minuto; `SCAN_CRON` y `TZ` en `.env`.
-- [ ] Angular: sección "Escaneo automático", botón "Escanear todas" y aviso cuando un escaneo se queda en la cola.
-- [ ] Pruebas: reglas del horario (unitarias), endpoints del horario, escanear todas y solicitudes simultáneas (integración), y los componentes nuevos (Vitest).
-- [ ] Ícono en la bandeja de Windows (`Mediateca.Tray` + `bandeja.ps1`), como el de Jellyfin: iniciar con Windows, iniciar, detener, abrir y ver registros. Es una app de WinForms fuera de Docker que controla Compose.
+- [x] Escaneo automático con Quartz y horario editable (`ScanSchedule`, `GET` y `PUT /api/admin/scan-schedule`), aplicado por el worker en menos de un minuto; `SCAN_CRON` y `TZ` en `.env`.
+- [x] Angular: sección "Escaneo automático", botón "Escanear todas" y aviso cuando un escaneo se queda en la cola.
+- [x] Pruebas: reglas del horario (unitarias), endpoints del horario, escanear todas y solicitudes simultáneas (integración), y los componentes nuevos (Vitest).
+- [x] Ícono en la bandeja de Windows (`Mediateca.Tray` + `bandeja.ps1`), como el de Jellyfin: iniciar con Windows, iniciar, detener, abrir y ver registros. Es una app de WinForms fuera de Docker que controla Compose.
 
 **Entregable:** el worker escanea solo con el horario elegido en la administración, y un escaneo pedido desde la API lo corre el worker.
 
@@ -493,14 +510,14 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 **Entregable:** dos usuarios ven bibliotecas diferentes.
 
 ### Fase 4. Metadatos
-- [ ] Proveedor de OMDb: búsqueda, detalle y episodios.
-- [ ] Proveedor de AniList (GraphQL): búsqueda por título y detalle, con un límite compartido de 1 solicitud cada 2 s y una pausa ante un 429 según `Retry-After`.
-- [ ] `AniListId` en lugar de `AniDbId` (migración) y la etiqueta `[anilistid-…]` en lugar de `[anidbid-…]`. Quitar las variables de AniDB de `.env.example`, Compose, `appsettings.json` y el README.
-- [ ] Caché, cola de metadatos en el worker y manejo del límite diario de OMDb.
-- [ ] Ficha como la de Jellyfin: fondo, título original, años de emisión, resumen, géneros, etiquetas, estudios, calificación, enlaces externos y, si sigue en emisión, el día y la hora.
-- [ ] Pósters y fondos en caché local, con prioridad para las imágenes que ya están junto a los videos.
-- [ ] Diálogos de Identificar y Actualizar metadatos.
-- [ ] Pruebas con respuestas de ejemplo.
+- [x] Proveedor de OMDb: búsqueda, detalle y episodios.
+- [x] Proveedor de AniList (GraphQL): búsqueda por título y detalle, con un límite compartido de 1 solicitud cada 2 s y una pausa ante un 429 según `Retry-After`.
+- [x] `AniListId` en lugar de `AniDbId` (migración) y la etiqueta `[anilistid-…]` en lugar de `[anidbid-…]`. Quitar las variables de AniDB de `.env.example`, Compose, `appsettings.json` y el README.
+- [x] Caché, cola de metadatos en el worker y manejo del límite diario de OMDb.
+- [x] Ficha como la de Jellyfin: fondo, título original, años de emisión, resumen, géneros, etiquetas, estudios, calificación, enlaces externos y, si sigue en emisión, el día y la hora.
+- [x] Pósters y fondos en caché local, con prioridad para las imágenes que ya están junto a los videos.
+- [x] Diálogos de Identificar y Actualizar metadatos.
+- [x] Pruebas con respuestas de ejemplo.
 
 **Entregable:** películas, series y anime muestran título, año, clasificación, resumen y póster; el anime, además, estudios, etiquetas, fondo y emisión.
 
@@ -563,7 +580,9 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 | Subtítulos quemados en la imagen no se pueden quitar ni cambiar, y los de imagen (PGS, VobSub) no se ofrecen | Solo se listan pistas de texto; lo quemado se ve siempre. Convertir los de imagen con OCR queda como extensión |
 | FFmpeg no está instalado (ejecución fuera de Docker) | Nada falla: se pierden solo los subtítulos incrustados, con un aviso en el registro; los archivos sueltos siguen funcionando |
 | Alguien sube archivos que no son subtítulos, muy grandes o muchos | Solo quien puede ver el video sube; 8 MB por archivo (también en nginx), 20 por video, se convierte a WebVTT y se rechaza si no tiene cues; se guardan en la carpeta de datos, nunca junto a los videos, y los borra quien los subió o un administrador |
-| Coincidencias equivocadas por títulos parecidos | Año en el nombre de la carpeta, etiquetas `[imdbid-…]` y `[anilistid-…]`, y el diálogo Identificar |
+| Coincidencias equivocadas por títulos parecidos | Puntuación por título, año, temporada y formato con umbral mínimo (lo dudoso queda `NotFound`, no se adivina), etiquetas `[imdbid-…]` y `[anilistid-…]`, y el diálogo Identificar |
+| Una imagen remota puede ser enorme o apuntar a otro sitio | Solo HTTPS desde dominios permitidos, sin redirecciones, máximo 10 MB y revisión del tipo real del archivo |
+| El título cambia por los metadatos y el escaneo duplica la serie | `ScanKey` conserva la identidad de la carpeta |
 | Bibliotecas grandes | Escaneo incremental, guardado en lotes, paginación e índice trigram |
 
 ---

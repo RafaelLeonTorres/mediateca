@@ -43,6 +43,7 @@ const existing: AdminLibrary = {
   lastScannedAt: null,
   itemCount: 0,
   lastScan: null,
+  metadata: null,
 };
 
 /** Deja correr lo pendiente (promesas y la continuación de un await) antes de seguir. */

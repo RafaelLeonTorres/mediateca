@@ -10,16 +10,21 @@ import {
   AdminApi,
   isScanActive,
   type AdminLibrary,
+  type MetadataSummary,
   type ScanJob,
 } from '../../core/admin/admin-api';
 import { LIBRARY_TYPE_LABELS, type LibraryType } from '../../core/libraries/libraries-api';
 import { ConfirmDialog, type ConfirmDialogData } from '../../shared/confirm-dialog';
+import { describeMetadataError } from '../../core/metadata/metadata-api';
 import { describeError } from '../../shared/describe-error';
 import { LibraryDialog, type LibraryDialogData } from './library-dialog';
 import { ScanScheduleSection } from './scan-schedule';
 
 /** Cada cuántos milisegundos se pregunta cómo va un escaneo. */
 export const SCAN_POLL_MS = 2000;
+
+/** Cada cuántos milisegundos se vuelve a pedir la lista mientras hay metadatos por buscar. */
+export const METADATA_POLL_MS = 10_000;
 
 /** Pasado este tiempo en la cola sin que nadie lo tome, se avisa que quizá el worker no está corriendo. */
 export const QUEUE_WARNING_MS = 30_000;
@@ -30,6 +35,11 @@ function describeQueued(queued: number): string {
     return 'No se puso nada en cola: todas las bibliotecas ya tienen un escaneo pendiente.';
   }
   return queued === 1 ? 'Se puso en cola 1 escaneo.' : `Se pusieron en cola ${queued} escaneos.`;
+}
+
+/** ¿Quedan elementos por buscar y el proveedor puede trabajar? Si falta la clave, no tiene caso esperar. */
+function hasQueuedMetadata(metadata: MetadataSummary | null | undefined): boolean {
+  return !!metadata && metadata.pending > 0 && metadata.configured;
 }
 
 /** Administración de bibliotecas: lista, alta y edición, baja y escaneo con avance. */
@@ -121,6 +131,42 @@ function describeQueued(queued: number): string {
               }
             </ul>
 
+            @if (library.metadata; as meta) {
+              <section class="metadata" [attr.aria-label]="'Metadatos de ' + library.name">
+                <p class="counts">
+                  <span class="label">Metadatos ({{ meta.providerName }})</span>
+                  <span>{{ meta.matched }} encontrados</span>
+                  <span>{{ meta.pending }} pendientes</span>
+                  <span>{{ meta.notFound }} sin resultado</span>
+                  <span>{{ meta.error }} con error</span>
+                </p>
+                @if (!meta.configured) {
+                  <p class="warning" role="status">
+                    {{ meta.message ?? 'Falta la clave de OMDb. Define OMDB_API_KEY y reinicia los contenedores api y worker.' }}
+                  </p>
+                } @else if (meta.pausedUntil) {
+                  <p class="notice-inline" role="status">
+                    {{ meta.providerName }} está en pausa hasta las
+                    {{ meta.pausedUntil | date: 'HH:mm' }}; la cola sigue sola.
+                  </p>
+                }
+                <div class="meta-actions">
+                  <button
+                    matButton="tonal"
+                    type="button"
+                    [disabled]="!meta.configured || fetchingMetadata().has(library.id)"
+                    (click)="fetchMetadata(library)"
+                  >
+                    <mat-icon aria-hidden="true">travel_explore</mat-icon>
+                    Buscar metadatos
+                  </button>
+                  @if (metadataMessages()[library.id]; as message) {
+                    <span class="notice-inline" role="status">{{ message }}</span>
+                  }
+                </div>
+              </section>
+            }
+
             @let job = jobOf(library);
             @if (job && isActive(library)) {
               <div class="scan" role="status">
@@ -191,6 +237,41 @@ function describeQueued(queued: number): string {
 
     .warning {
       margin: 8px 0 0;
+    }
+
+    .metadata {
+      margin-top: 12px;
+    }
+
+    .counts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      margin: 0;
+      font: var(--mat-sys-body-medium);
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    .counts .label {
+      font: var(--mat-sys-label-large);
+      color: var(--mat-sys-on-surface);
+    }
+
+    .meta-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .notice-inline {
+      margin: 8px 0 0;
+      color: var(--mat-sys-on-surface-variant);
+    }
+
+    .meta-actions .notice-inline {
+      margin: 0;
     }
 
     .notice {
@@ -301,6 +382,12 @@ export class AdminLibraries {
   protected readonly scanningAll = signal(false);
   protected readonly scanAllMessage = signal<string | null>(null);
 
+  /** Bibliotecas a las que se acaba de pedir buscar metadatos (por id). */
+  protected readonly fetchingMetadata = signal<ReadonlySet<string>>(new Set());
+  /** Mensaje de la última petición de metadatos de cada biblioteca (por id). */
+  protected readonly metadataMessages = signal<Record<string, string>>({});
+  private metadataTimer: ReturnType<typeof setTimeout> | null = null;
+
   /** Hora de la última revisión, para saber cuánto lleva un escaneo en la cola (se actualiza al preguntar). */
   private readonly now = signal(Date.now());
 
@@ -314,6 +401,22 @@ export class AdminLibraries {
     this.destroyRef.onDestroy(() => {
       this.destroyed = true;
       this.timers.forEach((timer) => clearTimeout(timer));
+      if (this.metadataTimer) {
+        clearTimeout(this.metadataTimer);
+      }
+    });
+
+    // Mientras haya metadatos por buscar, la lista se vuelve a pedir cada 10 s para ver cómo avanza la cola.
+    effect(() => {
+      const waiting = this.list().some((library) => hasQueuedMetadata(library.metadata));
+      if (waiting && !this.metadataTimer && !this.destroyed) {
+        this.metadataTimer = setTimeout(() => {
+          this.metadataTimer = null;
+          if (!this.destroyed) {
+            this.libraries.reload();
+          }
+        }, METADATA_POLL_MS);
+      }
     });
 
     // Si la página se abre con un escaneo en marcha, se sigue su avance.
@@ -350,6 +453,32 @@ export class AdminLibraries {
   /** ¿Lleva más de 30 s en la cola? Lo normal es que el worker lo tome en unos segundos. */
   protected isStuck(job: ScanJob): boolean {
     return job.status === 'Queued' && this.now() - Date.parse(job.createdAt) > QUEUE_WARNING_MS;
+  }
+
+  /** Pone en la cola la búsqueda de metadatos de las series o películas pendientes de la biblioteca. */
+  protected async fetchMetadata(library: AdminLibrary): Promise<void> {
+    this.error.set(null);
+    this.fetchingMetadata.update((ids) => new Set(ids).add(library.id));
+    try {
+      const result = await this.api.fetchMetadata(library.id);
+      const message =
+        result.message ??
+        (result.queued === 0
+          ? 'No hay nada pendiente.'
+          : result.queued === 1
+            ? 'Se puso en cola 1 elemento.'
+            : `Se pusieron en cola ${result.queued} elementos.`);
+      this.metadataMessages.update((messages) => ({ ...messages, [library.id]: message }));
+      this.libraries.reload();
+    } catch (error) {
+      this.error.set(describeMetadataError(error));
+    } finally {
+      this.fetchingMetadata.update((ids) => {
+        const next = new Set(ids);
+        next.delete(library.id);
+        return next;
+      });
+    }
   }
 
   protected async scanAll(): Promise<void> {

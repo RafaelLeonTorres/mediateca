@@ -34,6 +34,30 @@ export interface AdminLibrary {
   lastScannedAt: string | null;
   itemCount: number;
   lastScan: ScanJob | null;
+  /** Estado de los metadatos; null en bibliotecas sin proveedor (música). */
+  metadata: MetadataSummary | null;
+}
+
+/** Cuántas series o películas de una biblioteca hay en cada estado de metadatos. */
+export interface MetadataSummary {
+  provider: string;
+  providerName: string;
+  pending: number;
+  matched: number;
+  notFound: number;
+  error: number;
+  /** false si falta la clave del proveedor (OMDb). */
+  configured: boolean;
+  /** Si el proveedor está en pausa, hasta cuándo (ISO 8601). */
+  pausedUntil: string | null;
+  message: string | null;
+}
+
+/** Respuesta de pedir la búsqueda de metadatos de una biblioteca. */
+export interface MetadataQueueResult {
+  queued: number;
+  configured: boolean;
+  message: string | null;
 }
 
 /** Cuerpo para crear o editar una biblioteca. En la edición el tipo no cambia. */
@@ -119,6 +143,13 @@ export class AdminApi {
 
   scanStatus(jobId: string): Promise<ScanJob> {
     return firstValueFrom(this.http.get<ScanJob>(`/api/admin/scans/${jobId}`));
+  }
+
+  /** Pone en la cola la búsqueda de metadatos de las series o películas pendientes de la biblioteca. */
+  fetchMetadata(id: string): Promise<MetadataQueueResult> {
+    return firstValueFrom(
+      this.http.post<MetadataQueueResult>(`/api/admin/libraries/${id}/metadata/fetch`, {}),
+    );
   }
 
   /** Pone en la cola un escaneo de cada biblioteca. Las que ya tienen uno en marcha no cuentan. */

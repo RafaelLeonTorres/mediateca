@@ -121,7 +121,7 @@ Todo se configura en `.env`; los valores por defecto están en `.env.example`.
 | `API_ENVIRONMENT` | Con `Development`, la API publica su documentación en <http://localhost:5080/scalar> | `Production` |
 | `SCAN_CRON` | Horario **inicial** del escaneo automático, en formato cron de Quartz (con segundos). Después se cambia desde Administrar › Bibliotecas | `0 0 3 * * ?` (todos los días a las 3:00) |
 | `TZ` | Zona horaria en la que se interpretan los horarios del escaneo automático | `America/Mexico_City` |
-| `OMDB_API_KEY`, `ANIDB_CLIENT`, `ANIDB_CLIENT_VERSION` | Metadatos de IMDb (a través de OMDb) y de AniDB | vacíos |
+| `OMDB_API_KEY` | Clave gratuita de [OMDb](https://www.omdbapi.com/apikey.aspx) para los metadatos de películas y series que no son anime (IMDb). El anime usa AniList y no necesita clave | vacía |
 
 `.env` no se sube a git.
 
@@ -139,12 +139,23 @@ El formato de `SCAN_CRON` es el de Quartz: seis campos, `segundo minuto hora dí
    | Anime | `Serie/… - NN` o `SxxEyy` | `Anime/Mi Anime/[Grupo] Mi Anime - 05 [1080p].mkv` |
    | Música | `Artista/Álbum/NN - Título` (las etiquetas del archivo mandan) | `Musica/Miles Davis/Kind of Blue/01 - So What.flac` |
 
-   En el nombre de la carpeta puedes agregar `[imdbid-tt0113277]` o `[anidbid-23]`. Se ignoran las carpetas y los archivos que empiezan con punto.
+   En el nombre de la carpeta puedes agregar `[imdbid-tt0113277]` o `[anilistid-21]` para fijar qué es (se usa en lugar de buscar por nombre). Las etiquetas `[anidbid-…]` se reconocen y se descartan: ya no se usa AniDB. Se ignoran las carpetas y los archivos que empiezan con punto.
 3. **Crea la biblioteca.** Entra como administrador, abre **Administrar › Bibliotecas** y elige **Nueva biblioteca**: nombre, tipo (películas, series, anime o música) y una o más carpetas, que eliges con el selector en cualquier disco ("Disco C:", "Disco F:"...). Cada biblioteca tiene sus propias carpetas, y se ven con su ruta de Windows (`F:\Peliculas`).
 4. **Escanéala.** Pulsa **Escanear** (o **Escanear todas**): el escaneo entra a la cola, el `worker` lo toma y el avance se actualiza cada 2 segundos. Los siguientes escaneos son incrementales: solo procesan lo nuevo, lo modificado y lo que desapareció.
 5. **Deja que se escaneen solas.** Más abajo, en **Escaneo automático**, activa **Revisar cambios automáticamente** y elige la frecuencia (cada hora, cada 6 o 12 horas, diario a las 3:00, semanal o un cron propio). Pulsa **Guardar horario**: el worker lo aplica en menos de un minuto, sin reiniciar nada. La pantalla muestra la zona horaria y las próximas 3 ejecuciones.
 
+6. **Busca los metadatos.** En la misma pantalla, cada biblioteca de anime, series o películas muestra cuántos elementos tienen metadatos, cuántos esperan, cuántos no se encontraron y cuántos fallaron. Pulsa **Buscar metadatos** y el `worker` los trae poco a poco, sin que tengas que esperar en la pantalla. Si falta la clave de OMDb, la pantalla lo avisa. Para las películas y series que no son anime, define `OMDB_API_KEY` en `.env` y reinicia (`docker compose up -d`).
+
 Al terminar, el inicio muestra lo agregado recientemente y tus bibliotecas.
+
+### Metadatos
+
+- **De dónde salen.** El anime, de [AniList](https://anilist.co) (sin clave, con su aviso "Datos de AniList" en la ficha). Las películas y las series que no son anime, de IMDb a través de OMDb.
+- **Cómo se ve la ficha.** Como en Jellyfin: imagen de fondo con un degradado oscuro, póster, título y título original, años ("2026 – Actualidad"), estado, calificación, clasificación por edad, duración, sinopsis, "Se emite los martes a las 23:00" (en tu zona horaria), géneros, estudios, etiquetas y enlaces a AniList, MyAnimeList e IMDb. Los episodios muestran su título cuando el proveedor lo conoce.
+- **Tus imágenes mandan.** Si la carpeta tiene `folder.jpg` (póster), `backdrop.jpg` (fondo) o `NN-thumb.jpg` (miniatura de un episodio), se usan esas. Solo cuando no hay, se baja la del proveedor, una sola vez, y se guarda en el volumen de datos.
+- **Si se equivoca.** Entra a la ficha como administrador y pulsa **Identificar**: busca por nombre y elige el correcto, o pega un id o una dirección de AniList o de IMDb. **Actualizar metadatos** vuelve a pedirlos con el mismo id. También puedes fijar el id en el nombre de la carpeta (`[anilistid-21]`).
+- **Series en emisión.** Se actualizan solas cada 24 horas aproximadamente, para tener el siguiente episodio.
+- **Límites.** AniList se consulta como máximo una vez cada 2 segundos, y OMDb permite 1000 consultas al día en la clave gratuita. Si el servicio pide esperar o se agota el cupo, la cola se pausa sola y sigue después: la administración lo indica.
 
 ### Tus discos
 
@@ -270,6 +281,8 @@ dotnet ef migrations add NombreDelCambio --project src/Mediateca.Infrastructure 
 ```
 
 El cambio que movió los escaneos al worker agrega la tabla `ScanSchedules` y el índice único de escaneo activo por biblioteca, así que necesita su propia migración (nombre sugerido: `WorkerYHorarioDeEscaneo`). Mientras no la generes, la API no arranca y las pruebas de integración fallan, porque EF Core 11 no migra con cambios de modelo pendientes.
+
+Los metadatos (fase 4) cambian `AniDbId` por `AniListId` y agregan columnas e índices a `MediaItems`, así que también necesitan su migración: `dotnet ef migrations add Metadatos --project src/Mediateca.Infrastructure --startup-project src/Mediateca.Api --output-dir Persistence/Migrations`. La migración borra la columna `AniDbId`: si ya guardaste ids de AniDB, no se conservan (AniDB ya no se usa).
 
 ## Pruebas
 
