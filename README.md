@@ -1,8 +1,23 @@
 # Mediateca
 
-Gestor de contenido multimedia: organiza y reproduce tu colección de música, películas, series y anime desde el navegador. Proyecto de portafolio con .NET 11, EF Core 11 (Code First), PostgreSQL 18 y Angular 22, que corre en Docker.
+[![CI](https://github.com/RafaelLeonTorres/mediateca/actions/workflows/ci.yml/badge.svg)](https://github.com/RafaelLeonTorres/mediateca/actions/workflows/ci.yml)
 
-> En construcción: fase 1 (primer arranque e inicio de sesión). El plan completo, con las fases y los criterios de aceptación, está en [PLAN.md](PLAN.md).
+Gestor de contenido multimedia para tu propia colección de películas, series, anime y música: la organiza con sus metadatos y la reproduce en el navegador, con permisos por usuario. Toma como referencia la funcionalidad básica de [Jellyfin](https://jellyfin.org), con código, modelo de datos y diseño propios.
+
+Proyecto de portafolio con **.NET 11**, **EF Core 11** (Code First), **PostgreSQL 18** y **Angular 22**, en cuatro contenedores de Docker.
+
+## Qué hace
+
+- **Bibliotecas** de películas, series, anime y música en cualquier carpeta de tus discos, elegidas desde la app. Los discos se montan de solo lectura.
+- **Escaneo incremental** en un proceso aparte (`worker`), a mano o con un horario que se cambia desde la administración.
+- **Metadatos** de IMDb (a través de OMDb) para películas y series, y de AniList para el anime, con estudios, etiquetas y el día y la hora del siguiente episodio. La música usa las etiquetas de sus archivos, e **Identificar** corrige una coincidencia equivocada.
+- **Reproductor propio** que retoma donde te quedaste, con "Continuar viendo", "A continuación", subtítulos (incrustados, junto al video o subidos desde el reproductor) y reescalado con la tarjeta gráfica desde el navegador (WebGPU).
+- **Usuarios y permisos:** cada usuario ve solo las bibliotecas que le das, y lo demás responde como si no existiera.
+- **Primer arranque en un comando:** crea la base de datos, pide la cuenta de administrador y queda corriendo.
+
+## Estado
+
+Las fases 0 a 5c están terminadas: primer arranque, bibliotecas y escaneo, worker con horario, usuarios y permisos, metadatos y reproducción. Falta la fase 6, el cierre para el portafolio (capturas y datos de demostración). El plan completo, con las fases y los criterios de aceptación, está en [PLAN.md](PLAN.md).
 
 ## Cómo está armado
 
@@ -18,6 +33,30 @@ Cuatro contenedores con Docker Compose:
 El navegador solo habla con `web`, así que la app y la API comparten origen: la cookie de sesión y el streaming de audio y video funcionan sin CORS ni tokens en las URL.
 
 Los escaneos no corren dentro de la API: la API (o el escaneo automático) solo los **pone en la cola**, que es una tabla de la base de datos, y el `worker` los toma y los ejecuta. Los dos contenedores ven los mismos discos (en `/discos`, de solo lectura) y el mismo volumen de datos.
+
+```mermaid
+flowchart LR
+  B["Navegador<br/>Angular 22"] -- "páginas, /api con cookie y XSRF,<br/>video y audio con Range" --> W["web<br/>nginx"]
+  W -- "/api" --> A["api<br/>ASP.NET Core 11"]
+  A --> D[("db<br/>PostgreSQL 18")]
+  K["worker<br/>.NET 11 y Quartz"] -- "toma escaneos de la cola<br/>y metadatos pendientes" --> D
+  A -- "pone escaneos en la cola" --> D
+  K --> F[["Tus discos (/discos) y /media<br/>solo lectura"]]
+  A --> F
+  A & K --> P[["Datos de la app (/data)<br/>pósters, carátulas y subtítulos"]]
+  A & K --> M[("OMDb (IMDb) y AniList")]
+```
+
+## Decisiones técnicas
+
+- **Cookie de sesión en lugar de JWT.** Las etiquetas `<video>` y `<audio>` no pueden mandar la cabecera `Authorization`, pero sí cookies del mismo origen. Por eso nginx sirve la app y la API en el mismo origen y el streaming queda autenticado sin tokens en las URL. Contra CSRF, cada POST, PUT y DELETE lleva el token XSRF de ASP.NET Core en una cabecera.
+- **La base de datos es la cola de escaneos.** La API solo inserta un `ScanJob` y responde al instante. El worker lo reclama con una actualización condicional (`UPDATE … WHERE Status = 'Queued'`) y un índice único parcial garantiza un solo escaneo activo por biblioteca, sin candados en la aplicación. La cola sobrevive a los reinicios y aguanta varios workers.
+- **Herencia TPH** para películas, series, temporadas, episodios, álbumes y pistas: una sola tabla y una sola consulta sirven para buscar, para "Agregado recientemente" y para "Continuar viendo". La búsqueda usa `pg_trgm` con un índice GIN.
+- **Los permisos se aplican en la consulta.** La regla de visibilidad es un método de extensión que usan todos los listados, y un elemento de otra biblioteca responde 404, no 403, para no revelar que existe. Los permisos se leen en cada solicitud y el sello de seguridad de la cookie se revisa cada 30 s: quitar una biblioteca o cambiar una contraseña se nota sin esperar a que caduque la sesión.
+- **Candados de PostgreSQL** (`pg_advisory_xact_lock`) donde una carrera dejaría datos inválidos: dos solicitudes simultáneas del primer arranque no crean dos administradores, y dos administradores que se quitan el cargo a la vez no dejan el sistema sin ninguno.
+- **Metadatos con límites y sin adivinar.** AniList (GraphQL) se consulta como máximo una vez cada 2 s y se pausa según `Retry-After`; OMDb se pausa al agotar su cupo diario. Las respuestas se guardan en caché, y una puntuación por título, año, temporada y formato con un umbral deja sin resultado lo dudoso en lugar de elegir mal.
+- **Angular 22 sin Zone.js:** componentes standalone con signals, `httpResource` para leer de la API, Signal Forms en todos los formularios y rutas con carga diferida.
+- **Pruebas** unitarias (xUnit), de integración contra un PostgreSQL real (Testcontainers) y de Angular (Vitest). GitHub Actions las corre en cada pull request, junto con una prueba de humo que levanta los contenedores.
 
 ## Levantar todo por primera vez
 
@@ -299,9 +338,7 @@ dotnet tool restore
 dotnet ef migrations add NombreDelCambio --project src/Mediateca.Infrastructure --startup-project src/Mediateca.Api --output-dir Persistence/Migrations
 ```
 
-El cambio que movió los escaneos al worker agrega la tabla `ScanSchedules` y el índice único de escaneo activo por biblioteca, así que necesita su propia migración (nombre sugerido: `WorkerYHorarioDeEscaneo`). Mientras no la generes, la API no arranca y las pruebas de integración fallan, porque EF Core 11 no migra con cambios de modelo pendientes.
-
-Los metadatos (fase 4) cambian `AniDbId` por `AniListId` y agregan columnas e índices a `MediaItems`, así que también necesitan su migración: `dotnet ef migrations add Metadatos --project src/Mediateca.Infrastructure --startup-project src/Mediateca.Api --output-dir Persistence/Migrations`. La migración borra la columna `AniDbId`: si ya guardaste ids de AniDB, no se conservan (AniDB ya no se usa).
+Hay tres migraciones: `Inicial`, `WorkerYHorarioDeEscaneo` (la cola y el horario de los escaneos) y `Metadatos` (cambia `AniDbId` por `AniListId`, así que los ids de AniDB que hubiera no se conservan). Con un cambio de modelo sin su migración, la API no arranca y las pruebas de integración fallan, porque EF Core 11 no migra con cambios pendientes.
 
 ## Pruebas
 
