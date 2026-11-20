@@ -229,7 +229,7 @@ Detalles que vale la pena mostrar en el portafolio:
 
 - **Intervalo mínimo de 5 minutos** (`Scanning:MinimumInterval`): la API rechaza con un 400 los horarios que disparan más seguido (se revisan las próximas ejecuciones, no solo las dos primeras).
 
-- Extensiones reconocidas: video `.mp4 .m4v .webm .mkv` y audio `.mp3 .m4a .aac .flac .ogg .opus .wav`.
+- Extensiones reconocidas: video `.mp4 .m4v .mov .webm .mkv` y audio `.mp3 .m4a .aac .flac .ogg .opus .wav`.
 
 Convenciones de nombres:
 
@@ -313,7 +313,7 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 ## 9. Reproducción
 
 - `GET /api/items/{id}/stream`: valida el acceso y responde con `TypedResults.PhysicalFile(ruta, mime, enableRangeProcessing: true)`. Así acepta `Range` y responde 206, que es lo que permite adelantar y regresar. La ruta siempre sale de la base de datos y se verifica que esté dentro de la carpeta de la biblioteca.
-- Formatos del MVP: MP4 (H.264/AAC) y WebM para video; MP3, AAC/M4A, FLAC y Ogg/Opus para audio. Si el navegador no puede reproducir un archivo (por ejemplo, un MKV con códecs incompatibles), la app lo indica y ofrece descargarlo. Reempaquetar con FFmpeg queda como extensión.
+- Formatos del MVP: MP4 (H.264/AAC), MOV con los mismos códecs (se sirve como `video/mp4`) y WebM para video; MP3, AAC/M4A, FLAC y Ogg/Opus para audio. Si el navegador no puede reproducir un archivo (por ejemplo, un MKV con códecs incompatibles), la app lo indica y ofrece descargarlo. Reempaquetar con FFmpeg queda como extensión.
 - **Reproductor propio (fase 5b):** el `<video>` ya no usa la barra nativa: la barra de controles es propia (reproducir y pausa, tiempo, barra de avance que se arrastra, volumen y silencio, subtítulos, Reescalar, pantalla completa, anterior y siguiente) y se oculta sola a los 3 s sin mover el ratón mientras se reproduce. La pantalla completa es el escenario entero (video, lienzo, subtítulos y controles). Atajos: espacio o K, flechas ±10 s, M, C y F; no se activan al escribir en un campo ni con Ctrl, Alt o Meta, y el espacio sobre un botón lo deja al navegador.
 - **Reescalado con GPU (fase 5b):** el botón "Reescalar" abre un panel con la vista (Original, Mejorado o Comparar, con un divisor que se arrastra), la resolución de salida (Pantalla, 720p, 1080p, 1440p, 4K), el escalado (Bilineal, Bicúbico, Lanczos 2 o Lanczos 3), nitidez adaptativa, reducción de ruido, anti-ringing, dithering y Restablecer. Se calcula en el navegador con WebGPU (el código sale del proyecto reproductor-video-gpu): el video se importa como textura externa y se dibuja en un `<canvas>` sobre el `<video>`. Empieza en Original, sin trabajo de GPU: el enhancer se crea (con una importación dinámica) la primera vez que se elige Mejorado o Comparar. Lo último que se eligió se recuerda en `localStorage`. Sin WebGPU el botón queda deshabilitado con un aviso; si la GPU falla, vuelve a Original y lo avisa. El servidor no interviene.
 - **Subtítulos (fase 5b):** `GET /api/items/{id}/subtitles` lista las pistas de texto: las incrustadas en el contenedor (se leen con `ffprobe`) y los archivos sueltos junto al video (`.srt`, `.vtt`, `.ass`, `.ssa` cuyo nombre empieza con el del video, por ejemplo `Capitulo 01.es.srt` o `Capitulo 01.en.forced.vtt`). Los ids son `e{n}` (stream `n` del contenedor) y `x{n}` (archivo suelto). Las etiquetas salen en español ("Español", "Inglés (forzados)", "Pista 3") y los duplicados se distinguen por título, origen o número. Solo se ofrecen códecs de texto (subrip, ass, ssa, mov_text, webvtt, text); los de imagen se ignoran. `GET /api/items/{id}/subtitles/{trackId}.vtt` entrega WebVTT: los `.vtt` tal cual, los `.srt` convertidos en C#, los `.ass` y `.ssa` con FFmpeg (o con un convertidor propio si no está) y las incrustadas con `ffmpeg`, con un límite de extracciones a la vez, un tiempo máximo y una caché en disco (`{DataPath}/subtitles/{itemId}-{trackId}-{ticks}.vtt`; `ticks` es la fecha de modificación del video, así que cambia con el archivo). La lista se guarda en memoria por ruta y fecha de modificación. Nunca se sirve un archivo fuera de las carpetas de medios.
@@ -583,6 +583,7 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 ### Fase 6. Cierre para el portafolio
 - [ ] README con descripción, capturas, diagrama y decisiones técnicas (el primer arranque ya está desde la fase 0).
 - [ ] Datos de demostración con contenido libre, por ejemplo las películas abiertas de Blender (Big Buck Bunny, Sintel) con licencia Creative Commons, en la carpeta de `MEDIA_PATH`, para que las capturas no muestren material con derechos de autor.
+- [x] Reconocer videos `.mov` (QuickTime): el escáner los toma y se sirven como `video/mp4` para que el navegador los reproduzca si traen H.264 y AAC.
 - [ ] En el sitio, agregar `url` (el repositorio de GitHub) y `status: done` al proyecto en `_data/projects.yml`.
 
 ---
