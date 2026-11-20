@@ -66,4 +66,40 @@ describe('SessionStore', () => {
 
     expect(store.isLoggedIn()).toBe(true);
   });
+
+  it('actualiza al usuario de la sesión y expira la sesión cuando la API la rechaza', async () => {
+    store.user.set(rafael);
+
+    store.updateUser({ ...rafael, displayName: 'Rafa' });
+    expect(store.user()?.displayName).toBe('Rafa');
+    expect(store.isLoggedIn()).toBe(true);
+
+    store.expire();
+    expect(store.user()).toBeNull();
+    expect(store.isLoggedIn()).toBe(false);
+    // Pide un token XSRF nuevo: /api/auth/me lo entrega aunque responda 401.
+    http.expectOne('/api/auth/me').flush(null, { status: 401, statusText: 'Unauthorized' });
+    await settle();
+    expect(store.isLoggedIn()).toBe(false);
+  });
+
+  it('después de que la sesión se cierra, el inicio de sesión espera el token XSRF nuevo', async () => {
+    store.user.set(rafael);
+    store.expire();
+    const me = http.expectOne('/api/auth/me');
+
+    const login = store.login('admin', 'una-clave-larga', true);
+    await settle();
+    // Con el token del usuario anterior, la API rechazaría el inicio de sesión: todavía no se manda.
+    http.expectNone('/api/auth/login');
+
+    me.flush(null, { status: 401, statusText: 'Unauthorized' });
+    await settle();
+    http.expectOne('/api/auth/login').flush(null, { status: 204, statusText: 'No Content' });
+    await settle();
+    http.expectOne('/api/auth/me').flush(rafael);
+    await login;
+
+    expect(store.isLoggedIn()).toBe(true);
+  });
 });

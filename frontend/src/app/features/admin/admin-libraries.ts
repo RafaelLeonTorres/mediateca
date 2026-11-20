@@ -376,7 +376,10 @@ export class AdminLibraries {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly libraries = this.api.libraries();
-  protected readonly list = computed(() => this.libraries.value() ?? []);
+  // value() lanza si el recurso está en error (por ejemplo, la sesión se cerró): primero se pregunta si tiene valor.
+  protected readonly list = computed(() =>
+    this.libraries.hasValue() ? (this.libraries.value() ?? []) : [],
+  );
   protected readonly loaded = computed(() => this.libraries.status() === 'resolved');
   protected readonly error = signal<string | null>(null);
   protected readonly scanningAll = signal(false);

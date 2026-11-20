@@ -31,6 +31,9 @@ export class SessionStore {
   /** La API no respondió al abrir la app. */
   readonly apiError = signal(false);
 
+  /** El token XSRF nuevo que se pidió cuando la sesión se cerró desde el servidor (ver expire). */
+  private xsrfRefresh: Promise<void> | null = null;
+
   /** Se llama al arrancar la app, antes de la primera pantalla. */
   async load(): Promise<void> {
     try {
@@ -50,6 +53,11 @@ export class SessionStore {
   }
 
   async login(userName: string, password: string, rememberMe: boolean): Promise<void> {
+    // Si la sesión se acaba de cerrar, primero tiene que llegar el token XSRF sin usuario.
+    if (this.xsrfRefresh) {
+      await this.xsrfRefresh;
+      this.xsrfRefresh = null;
+    }
     await firstValueFrom(
       this.http.post<void>('/api/auth/login', { userName, password, rememberMe }),
     );
@@ -59,6 +67,24 @@ export class SessionStore {
   async logout(): Promise<void> {
     await firstValueFrom(this.http.post<void>('/api/auth/logout', {}));
     await this.refreshUser();
+  }
+
+  /** Pone al usuario de la sesión tal como lo devolvió la API (por ejemplo, con su nombre visible nuevo). */
+  updateUser(user: User): void {
+    this.user.set(user);
+  }
+
+  /**
+   * La API rechazó la sesión (401): se cerró desde el servidor. Sin usuario, los guards mandan a /login.
+   *
+   * El token XSRF de la cookie va ligado al usuario que ya no tiene sesión, así que la API rechazaría con él
+   * el siguiente inicio de sesión ("Falta el token XSRF o no es válido"). Por eso se pide uno nuevo a
+   * /api/auth/me, que sin sesión responde 401 pero lo entrega igual.
+   */
+  expire(): void {
+    this.user.set(null);
+    // Sin conexión no hay token nuevo; el inicio de sesión mostrará el error que corresponda.
+    this.xsrfRefresh = this.refreshUser().catch(() => undefined);
   }
 
   /** Pide el usuario actual y un token XSRF nuevo. Sin sesión, la API responde 401. */

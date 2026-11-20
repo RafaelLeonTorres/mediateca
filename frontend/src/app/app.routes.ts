@@ -45,11 +45,29 @@ export const routes: Routes = [
         loadComponent: () => import('./features/item/item-page').then((m) => m.ItemPage),
       },
       {
-        path: 'admin/bibliotecas',
-        title: 'Administrar bibliotecas · Mediateca',
+        path: 'mi-cuenta',
+        title: 'Mi cuenta · Mediateca',
+        loadComponent: () => import('./features/account/my-account').then((m) => m.MyAccount),
+      },
+      {
+        // La administración: Bibliotecas y Usuarios son pestañas de un mismo marco. /admin lleva a Bibliotecas.
+        path: 'admin',
         canActivate: [adminGuard],
-        loadComponent: () =>
-          import('./features/admin/admin-libraries').then((m) => m.AdminLibraries),
+        loadComponent: () => import('./features/admin/admin-shell').then((m) => m.AdminShell),
+        children: [
+          { path: '', pathMatch: 'full', redirectTo: 'bibliotecas' },
+          {
+            path: 'bibliotecas',
+            title: 'Administrar bibliotecas · Mediateca',
+            loadComponent: () =>
+              import('./features/admin/admin-libraries').then((m) => m.AdminLibraries),
+          },
+          {
+            path: 'usuarios',
+            title: 'Administrar usuarios · Mediateca',
+            loadComponent: () => import('./features/admin/admin-users').then((m) => m.AdminUsers),
+          },
+        ],
       },
     ],
   },
