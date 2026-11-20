@@ -38,7 +38,7 @@ Dónde vive cada cosa:
 |---|---|
 | Backend | .NET 11 (C# 15) y ASP.NET Core 11 |
 | Datos | EF Core 11, Code First con migraciones |
-| Base de datos | PostgreSQL 18; PostgreSQL 19 cuando salga (lanzamiento planeado para el 19 de noviembre de 2026) |
+| Base de datos | PostgreSQL 18. La 19 salió el 19 de noviembre de 2026; pasar a ella queda pendiente porque pide migrar los datos (ver las notas) |
 | Proveedor de EF | Npgsql.EntityFrameworkCore.PostgreSQL 11 |
 | Autenticación | ASP.NET Core Identity con cookie |
 | Frontend | Angular 22 (última 22.x), Angular Material, zoneless y Vitest |
@@ -54,7 +54,8 @@ Notas de versiones:
 - EF Core 11 lanza un error si `MigrateAsync` no encuentra migraciones, así que la primera migración se genera antes de arrancar la API. Las APIs síncronas solo dejaron de funcionar en el proveedor de Cosmos DB; aun así, el proyecto usa siempre las asíncronas (`MigrateAsync`, `SaveChangesAsync`, `ToListAsync`).
 - EF Core 11: las colecciones primitivas (`List<string>` como `text[]`) se configuran con `PrimitiveCollection`, ya no con `Property`.
 - **Quartz.NET 4.7.3:** solo se instala el paquete `Quartz`. En la serie 4.x, `Quartz.Extensions.Hosting` y `Quartz.Extensions.DependencyInjection` son paquetes vacíos: `AddQuartz` y `AddQuartzHostedService` ya vienen en `Quartz`. En 4.x, `IJob.Execute` devuelve `ValueTask` y recibe un `CancellationToken`.
-- **Npgsql EF Core 11:** en la fase 0 confirma en NuGet si ya hay versión estable. Si todavía no, usa la última preliminar 11.0 y actualiza en cuanto salga la estable.
+- **Npgsql EF Core 11:** al 20 de noviembre de 2026 sigue en preliminar (11.0.0-rc.3) y su mantenedor anunció la estable para esa misma semana. Cuando salga, se actualiza el paquete y se quita el fijado de EF Core 11.0.0 que explica el comentario de `Mediateca.Infrastructure.csproj`.
+- **PostgreSQL 19** salió el 19 de noviembre de 2026. Cambiar de versión no es solo cambiar la imagen: los datos del volumen `pgdata` son de la 18 y la 19 no arranca con ellos. Hace falta respaldar con `pg_dumpall` y restaurar en un volumen nuevo (o usar `pg_upgrade`), y cambiar la imagen en `docker-compose.yml` y en Testcontainers (`MediatecaApiFactory`).
 
 ---
 
@@ -179,11 +180,14 @@ Detalles que vale la pena mostrar en el portafolio:
 
 ## 6. Usuarios y permisos
 
-- Identity con llaves `Guid` y roles `Admin` y `Usuario`. No hay registro público: solo el administrador crea cuentas.
-- El administrador puede crear, editar y desactivar usuarios, restablecer contraseñas y marcar a qué bibliotecas entra cada uno.
-- **Regla de visibilidad:** un usuario ve una biblioteca solo si existe `UserLibraryAccess(UserId, LibraryId)`; el administrador ve todas.
-- La regla vive en un método de extensión (`VisibleTo(userId, isAdmin)`) que usan los listados, la búsqueda y las filas de inicio. Los endpoints de un elemento, sus hijos, su imagen y su stream responden **404** si el usuario no tiene acceso, para no revelar que el elemento existe.
-- Las pruebas de integración verifican esta regla con dos usuarios.
+- Identity con llaves `Guid` y roles `Admin` y `Usuario`. No hay registro público: el primer arranque crea al administrador y solo un administrador crea las demás cuentas (`/api/admin/users`, con `UserManager` y `RoleManager` y los errores de Identity en español).
+- **Administración de usuarios.** El administrador lista (usuario, nombre visible, rol, bibliotecas y fecha de alta), crea (usuario, nombre visible, contraseña inicial, rol y bibliotecas), edita (nombre visible, rol y bibliotecas; el nombre de usuario no cambia), restablece la contraseña (la elige él) y da de baja. La baja borra la cuenta; su progreso (`UserItemData`) y sus permisos (`UserLibraryAccess`) se borran en cascada. Restablecer la contraseña también quita un bloqueo por intentos fallidos. Las contraseñas se validan con las reglas de Identity (8 caracteres como mínimo) y cada error vuelve por campo (`ValidationProblem`).
+- **Regla de visibilidad:** un usuario ve una biblioteca solo si existe `UserLibraryAccess(UserId, LibraryId)`; el administrador ve todas. **Las bibliotecas de un administrador no importan:** al crearlo o al darle el rol `Admin` no se le guardan permisos (y se borran los que tuviera), y su respuesta siempre trae `libraryIds` vacío; la pantalla muestra sus casillas deshabilitadas con la explicación.
+- La regla vive en un método de extensión (`VisibleTo(userId, isAdmin)`, hoy `VisibleLibraries` y `VisibleItems`) que usan los listados, la búsqueda y las filas de inicio. Los endpoints de un elemento, sus hijos, su imagen, su stream, sus subtítulos, su reproducción y su progreso responden **404** si el usuario no tiene acceso, para no revelar que el elemento existe. Los permisos se consultan en cada solicitud, así que dar o quitar una biblioteca se nota al instante.
+- **Reglas del administrador:** no puede borrar su propia cuenta ni quitarse el rol (409), y nunca queda el sistema sin administradores (409). Las operaciones que podrían dejarlo sin ninguno (quitar el rol `Admin` o borrar a un administrador) se hacen con un candado de PostgreSQL (`pg_advisory_xact_lock`) dentro de una transacción, como el setup, así que dos administradores que se quitan el cargo a la vez no dejan el sistema vacío: se aplica uno y el otro recibe 409.
+- **Sesiones.** La cookie lleva el sello de seguridad de Identity. Cambiar el rol o la contraseña de alguien lo renueva (`UpdateSecurityStampAsync`; restablecer o cambiar la contraseña ya lo hace solo), y borrar al usuario deja a la cookie sin dueño. `SecurityStampValidatorOptions.ValidationInterval` (por omisión, 30 minutos en Identity) se baja a **30 segundos** (`Auth:Session:ValidationInterval`; las pruebas lo ponen en 0): pasado ese tiempo, la sesión vieja recibe 401 y Angular lleva a `/login`. Cambiar el nombre o las bibliotecas no cierra sesiones.
+- **Mi cuenta** (`/api/me/account`, `/api/me/password`, cualquier usuario con sesión): ver y cambiar el nombre visible, y cambiar la contraseña con la actual y la nueva. Con la actual equivocada responde **400** (no 401: Angular cierra la sesión ante un 401). Después de cambiarla, la sesión actual sigue (`RefreshSignInAsync` vuelve a emitir su cookie con el sello nuevo) y las demás se cierran.
+- Las pruebas de integración verifican esta regla con dos usuarios y dos bibliotecas.
 
 ---
 
@@ -330,8 +334,12 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 |---|---|---|
 | `GET /api/setup/status` · `POST /api/setup` | anónimo | Saber si falta configurar y crear al primer administrador |
 | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | anónimo / usuario | Sesión con cookie |
-| `GET/POST/PUT/DELETE /api/admin/users` | admin | Usuarios |
-| `PUT /api/admin/users/{id}/libraries` | admin | Bibliotecas permitidas para un usuario |
+| `GET /api/admin/users` · `GET /api/admin/users/{id}` | admin | Usuarios: `{ id, userName, displayName, role, libraryIds, createdAt }`. `role` es `Admin` o `Usuario`; `libraryIds` va vacía en un administrador |
+| `POST /api/admin/users` | admin | Crear: `{ userName, displayName, password, role?, libraryIds? }` (201; 400 con los errores por campo en español) |
+| `PUT /api/admin/users/{id}` | admin | Editar: `{ displayName, role, libraryIds? }`. Sin `libraryIds` se quedan como están; con el rol `Admin` se ignoran. Cambiar el rol cierra las sesiones del usuario. 409 si un administrador se quita el rol o si no quedaría ninguno |
+| `PUT /api/admin/users/{id}/libraries` | admin | Reemplaza las bibliotecas permitidas: `{ libraryIds }` (400 si el usuario es administrador) |
+| `PUT /api/admin/users/{id}/password` | admin | Contraseña nueva: `{ newPassword }` (204). Cierra las sesiones del usuario y quita su bloqueo |
+| `DELETE /api/admin/users/{id}` | admin | Baja (204) con su progreso y sus permisos. 409 si es la cuenta propia o el último administrador |
 | `GET/POST/PUT/DELETE /api/admin/libraries` | admin | Bibliotecas |
 | `POST /api/admin/libraries/{id}/scan` · `GET /api/admin/scans/{id}` | admin | Poner un escaneo en la cola (202; si ya hay uno activo, devuelve ese) y ver el avance |
 | `POST /api/admin/libraries/scan-all` | admin | Poner en la cola un escaneo de cada biblioteca (202 con `{ "queued": n }`, los nuevos) |
@@ -350,6 +358,8 @@ API GraphQL pública en `https://graphql.anilist.co`: una sola dirección, con s
 | `PUT /api/items/{id}/progress` | usuario | Guardar posición (`{ positionSeconds }`); pasado el 90 % marca como visto. 400 si el valor no es válido |
 | `POST /api/items/{id}/played` · `DELETE /api/items/{id}/played` | usuario | Marcar como visto o no visto; en una serie, temporada o álbum, a todo su contenido |
 | `GET /api/items/{id}/next-up` | usuario | Qué ver a continuación en una serie o temporada (204 si no queda nada) |
+| `GET /api/me/account` · `PUT /api/me/account` | usuario | Mi cuenta: `{ id, userName, displayName, isAdmin }`; el `PUT` recibe `{ displayName }` |
+| `PUT /api/me/password` | usuario | Cambiar mi contraseña: `{ currentPassword, newPassword }` (204; 400 si la actual no es correcta). Mi sesión sigue; las demás se cierran |
 | `GET /api/me/continue-watching?limit=` · `GET /api/me/recently-added` | usuario | Filas de la pantalla de inicio. Continuar viendo devuelve `{ id, kind, title, seriesTitle, parentTitle, imageId, durationSeconds, positionSeconds, lastPlayedAt }` |
 | `GET /api/items/{id}/image?type=poster\|backdrop` | usuario | Póster (por omisión) o fondo; 404 si no hay o el tipo no es válido |
 | `POST /api/admin/libraries/{id}/metadata/fetch` | admin | Pone en la cola los elementos `Pending` y los que fallaron (202 con `{ queued, configured, message }`; 409 en música) |
@@ -374,15 +384,20 @@ Pantallas:
 | `/bibliotecas/:id` | Cuadrícula de pósters (o de álbumes, en música) con búsqueda, filtros por año y género, y orden |
 | `/items/:id` | Detalle. En series y películas, una cabecera como la de Jellyfin: fondo con degradado oscuro, póster, título y título original, "2026 – Actualidad", estado, ★, 18+, duración, resumen, "Se emite los martes a las 23:00" (calculado en el navegador con `Intl`, en tu zona horaria), géneros, estudios, hasta 10 etiquetas, enlaces externos y "Datos de AniList". Temporadas y episodios (con barra de avance y marca de visto), o pistas del álbum; botones Reproducir / Continuar desde, Reproducir álbum y Marcar como visto; tarjeta "A continuación" y, para el admin, Identificar y Actualizar metadatos |
 | `/reproducir/:id` | Reproductor de video a pantalla completa, fuera del layout (sin barra superior). Retoma donde te quedaste (con aviso y opción de empezar desde el inicio), guarda el avance, ofrece anterior y siguiente dentro de la misma carpeta, pasa solo al siguiente tras una cuenta regresiva de 5 s, y si el navegador no puede reproducir el archivo ofrece descargarlo. Controles propios que se ocultan solos, botón Reescalar (GPU), subtítulos y atajos: espacio o K, flechas ±10 s, M, C y F |
+| `/admin` | Marco de la administración con dos pestañas, Bibliotecas y Usuarios (solo admin). `/admin` lleva a Bibliotecas |
 | `/admin/bibliotecas` | Alta, edición, escaneo (uno o todos) y estado de las bibliotecas, conteos de metadatos con "Buscar metadatos" y aviso si falta la clave de OMDb, y la sección "Escaneo automático" con el horario |
-| `/admin/usuarios` | Usuarios, contraseña y casillas de bibliotecas permitidas |
+| `/admin/usuarios` | Lista de usuarios con su rol y sus bibliotecas; diálogo de alta y edición con casillas por biblioteca (deshabilitadas, con una explicación, si el rol es Administrador); contraseña nueva y baja con confirmación. Un administrador no puede borrarse ni cambiarse el rol |
+| `/mi-cuenta` | Nombre visible y cambio de contraseña de quien tiene la sesión (desde el menú del ícono de usuario) |
 
 Estructura y prácticas:
 
 - `core/` (sesión, cliente de la API, reproducción, guards), `features/` (setup, auth, home, library, item, player, admin) y `shared/` (tarjeta de póster, tarjeta de "continuar viendo", barra de música, insignia de clasificación).
-- Componentes standalone, signals, `@if`, `@for` y `@defer`, rutas con carga diferida y guards funcionales (`authGuard`, `adminGuard`, `setupGuard`).
+- Componentes standalone, signals, `@if`, `@for` y `@defer`, rutas con carga diferida y guards funcionales (`authGuard`, `adminGuard`, `guestGuard` y `setupPendingGuard`).
+- Un interceptor (`sessionExpiredInterceptor`) lleva a `/login?sesion=cerrada` cuando la API responde 401 con la sesión iniciada: la sesión se cerró desde el servidor (otro rol, otra contraseña, cuenta borrada o cookie vencida), y la pantalla de inicio de sesión lo avisa. Las llamadas de `/api/auth` y `/api/setup` no cuentan, y un error de validación es un 400. Al cerrarse la sesión, `SessionStore` pide un token XSRF nuevo a `/api/auth/me`: el anterior va ligado al usuario y la API rechazaría con él el siguiente inicio de sesión.
+- Los recursos (`httpResource`) se leen con `hasValue()` antes de `value()`, porque `value()` lanza cuando el recurso está en error (un 404, una sesión cerrada) y la pantalla se quedaría a medias.
 - `provideHttpClient(withXsrfConfiguration(...))` para que Angular mande el token XSRF solo.
-- Angular Material (Material 3) con diseño adaptable. Para los formularios de la administración, Signal Forms si ya son estables en tu versión 22.x; si no, formularios reactivos.
+- Angular Material (Material 3) con diseño adaptable.
+- **Todos los formularios usan Signal Forms** (`@angular/forms/signals`, estables desde Angular 22): el modelo es una señal, `form()` arma los campos con sus reglas (`required`, `minLength`, `pattern`, `validate`, `disabled`), `[formField]` los conecta con los campos de Angular Material y `submit()` marca los campos como tocados y solo envía si todo es válido. Las reglas de una contraseña nueva con su confirmación (setup, Mi cuenta y la contraseña que pone el administrador) están una sola vez en `shared/password-fields.ts`. No quedan formularios reactivos.
 
 ---
 
@@ -406,14 +421,18 @@ Estructura y prácticas:
 - **Unitarias (xUnit + Moq):**
   - analizadores de nombres de películas, series y anime, con muchos casos;
   - mapeo de respuestas de OMDb (JSON) y AniList (JSON de GraphQL) a partir de archivos de ejemplo, sin llamar a los servicios reales;
-  - el limitador de AniList y la pausa ante un 429;
-  - la regla de visibilidad.
+  - el limitador de AniList y la pausa ante un 429.
 - **Integración (Testcontainers + WebApplicationFactory):**
   - con un PostgreSQL vacío, la app crea la base;
   - el setup funciona una sola vez;
   - un usuario sin acceso recibe 404 en el detalle, la imagen y el stream;
+  - con dos usuarios y dos bibliotecas, cada uno ve solo lo suyo y recibe 404 en lo del otro (detalle, hijos, imagen, stream, subtítulos, reproducción y progreso); dar o quitar un permiso se nota al instante;
+  - administración de usuarios: alta, edición, restablecer contraseña y baja, con sus validaciones; un usuario normal recibe 403;
+  - un administrador no puede borrarse ni quitarse el rol, y dos administradores que se quitan el cargo a la vez no dejan el sistema sin ninguno;
+  - una sesión deja de valer al cambiar la contraseña o el rol, o al borrar al usuario; al cambiar la propia contraseña la sesión actual sigue y las demás se cierran, y con la actual equivocada no cambia nada;
   - el stream responde 206 a una solicitud con `Range`.
-- **Frontend (Vitest):** sesión, guards, `PlayerService` y un par de componentes.
+- **Frontend (Vitest):** sesión, guards, `PlayerService` y un par de componentes; la pantalla de usuarios y sus diálogos, Mi cuenta, el interceptor de sesión cerrada (con el token XSRF nuevo), el inicio de sesión (con el aviso de sesión cerrada), el primer arranque, una biblioteca ajena (404) y la navegación de la administración.
+- La regla de visibilidad (`VisibleLibraries` y `VisibleItems`) son consultas de EF Core, así que se prueba en integración, contra PostgreSQL, y no con pruebas unitarias.
 - **CI (GitHub Actions):** compilar y probar el backend (los runners de Ubuntu traen Docker para Testcontainers), probar y compilar Angular, y una prueba de humo que levanta los contenedores y consulta `/api/health` a través de nginx.
 
 ---
@@ -424,6 +443,10 @@ Estructura y prácticas:
 // appsettings.json: sin secretos
 {
   "ConnectionStrings": { "Default": "Host=localhost;Port=5433;Database=mediateca;Username=mediateca" },
+  "Auth": {
+    "LoginRateLimit": { "PermitLimit": 5, "Window": "00:01:00" },
+    "Session": { "ValidationInterval": "00:00:30" }
+  },
   "Storage": { "DataPath": "data", "MediaRoots": [ "/media" ], "DrivesPath": "/discos" },
   "Scanning": {
     "DefaultCron": "0 0 3 * * ?",
@@ -447,6 +470,7 @@ Estructura y prácticas:
 - Sección `Storage`: `DataPath` es la carpeta de datos de la app; `MediaRoots` son las carpetas de medios (por omisión `/media`, el montaje de `MEDIA_PATH`, que es opcional) y `DrivesPath` (por omisión `/discos`) es la carpeta donde Docker monta los discos, una subcarpeta por disco. `DrivesPath` se suma siempre a las carpetas permitidas; en `appsettings.json` está solo como documentación, porque su valor por omisión es el mismo.
 - Sección `Scanning`: `DefaultCron` y `DefaultEnabled` son el horario inicial (`SCAN_CRON` en `.env`) y solo cuentan mientras no haya uno guardado; después manda el de la administración. `QueuePollInterval`, `ScheduleSyncInterval` y `MinimumInterval` ajustan cada cuánto mira la cola el worker, cada cuánto revisa si cambió el horario y el mínimo entre dos escaneos automáticos. `TZ` es la zona horaria en la que se interpretan los horarios. `.env.example` documenta cada variable y `.env` no se sube a git.
 - Si corres la API fuera de Docker (con `dotnet watch`), la cadena de conexión con la contraseña va en `dotnet user-secrets`. El worker comparte el mismo `UserSecretsId`, así que los user-secrets (cadena de conexión, `Storage:DataPath` y `Storage:MediaRoots:0`) se definen una vez para los dos.
+- Sección `Auth`: `LoginRateLimit` son los intentos de inicio de sesión por IP y su ventana, y `Session:ValidationInterval` es cada cuánto se comprueba que una sesión siga valiendo (30 s por omisión; las pruebas usan 0, que comprueba en cada solicitud). Como variable de entorno de la API: `Auth__Session__ValidationInterval`.
 - Sección `Media`: `Ffprobe` y `Ffmpeg` son el nombre (si están en el `PATH`) o la ruta completa de cada programa, y por omisión valen `ffprobe` y `ffmpeg`. La imagen de Docker de la API los instala. Fuera de Docker, instálalos aparte; si no están, nada falla: solo se pierden los subtítulos incrustados (se registra un aviso) y los archivos sueltos `.srt`, `.vtt`, `.ass` y `.ssa` siguen funcionando. También se pueden ajustar `MaxConcurrentExtractions` (por omisión 2), `ProbeTimeout` (30 s) y `ExtractionTimeout` (2 min). En Docker, `Media__Ffmpeg` y `Media__Ffprobe` son las variables de entorno equivalentes.
 - Sección `Metadata`: la clave de OMDb (`OMDB_API_KEY` en `.env`; se pide gratis en <https://www.omdbapi.com/apikey.aspx>) y el intervalo de AniList, que no pide cuenta ni clave. `QueuePollInterval` es cada cuánto mira la cola el worker; `AiringRefreshInterval` y `RefreshCheckInterval`, cada cuánto se renuevan las series en emisión y cada cuánto se revisa si toca. La pausa tras 3 errores seguidos (5 minutos) es fija. Las variables de AniDB ya no existen.
 
@@ -456,7 +480,7 @@ Estructura y prácticas:
 
 Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 
-**Dónde vamos (18 de noviembre de 2026).** En `main` están las fases 0, 1, 2, 2b, 4, 5, 5b y 5c. La fase 3 (usuarios y permisos) ya está escrita y sus pruebas pasan, pero queda fuera del commit hasta probarla en el navegador. Pendientes sueltos: la barra de música con una biblioteca de música real (fase 5) y trabajar con ramas y pull requests (fase 0). Lo que sigue: probar y cerrar la fase 3, y después la fase 6 (cierre para el portafolio).
+**Dónde vamos (20 de noviembre de 2026).** En `main` están las fases 0, 1, 2, 2b, 4, 5, 5b y 5c. La fase 3 (usuarios y permisos) está terminada: sus pruebas pasan y se probó en el navegador; falta su commit. Pendientes sueltos: la barra de música con una biblioteca de música real (fase 5), trabajar con ramas y pull requests (fase 0), y las versiones de la sección 2 (Npgsql EF Core 11 estable y PostgreSQL 19). Lo que sigue: el commit de la fase 3 y después la fase 6 (cierre para el portafolio).
 
 ### Fase 0. Base del proyecto
 - [x] Crear `F:\Respaldo\Respaldo\Cursos\JellifinClon` y copiar este `PLAN.md` a la raíz.
@@ -502,10 +526,16 @@ Cada fase entrega algo que funciona de punta a punta: API, pantallas y pruebas.
 **Entregable:** el worker escanea solo con el horario elegido en la administración, y un escaneo pedido desde la API lo corre el worker.
 
 ### Fase 3. Usuarios y permisos
-- [ ] Administración de usuarios y de sus bibliotecas permitidas.
-- [ ] Regla de visibilidad en todas las consultas y 404 en los recursos ajenos.
-- [ ] Angular: pantalla de usuarios con casillas por biblioteca.
-- [ ] Pruebas con dos usuarios y bibliotecas distintas.
+- [x] Administración de usuarios (alta, edición, rol, contraseña y baja) y de sus bibliotecas permitidas, con las reglas del último administrador y las sesiones que se cierran al cambiar el rol o la contraseña. Mi cuenta: nombre visible y contraseña.
+- [x] Regla de visibilidad en todas las consultas y 404 en los recursos ajenos.
+- [x] Angular: Administrar con pestañas (Bibliotecas y Usuarios), pantalla de usuarios con casillas por biblioteca y Mi cuenta.
+- [x] Pruebas con dos usuarios y bibliotecas distintas.
+- [x] Prueba en el navegador con una cuenta de prueba en una sesión aparte (`127.0.0.1` en lugar de `localhost`, que tiene sus propias cookies). Se corrigió:
+  - volver a iniciar sesión después de que el servidor cierra la sesión: el token XSRF iba ligado al usuario anterior y la API lo rechazaba; ahora se pide uno nuevo y la pantalla avisa "Tu sesión se cerró";
+  - una biblioteca ajena se quedaba cargando (un `value()` lanzaba con el 404); ahora dice "No se encontró la biblioteca";
+  - Mi cuenta dejaba los campos en rojo después de cambiar la contraseña;
+  - la etiqueta del primer campo salía cortada en los diálogos, y las pestañas de Administrar mostraban una barra de desplazamiento vertical en Windows.
+- [x] Todos los formularios en Signal Forms, también el inicio de sesión y el primer arranque, con las reglas de la contraseña nueva en un solo lugar (`shared/password-fields.ts`).
 
 **Entregable:** dos usuarios ven bibliotecas diferentes.
 

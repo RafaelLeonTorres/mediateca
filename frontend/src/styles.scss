@@ -24,3 +24,11 @@ body {
   color: var(--mat-sys-on-surface);
   font: var(--mat-sys-body-medium);
 }
+
+// Diálogos: Material quita el espacio de arriba del contenido cuando va después del título, y ese contenido
+// recorta lo que se sale de él porque se desplaza. La etiqueta flotante de un campo con contorno sobresale unos
+// 8 px por arriba del campo, así que la del primer campo se veía cortada (Nueva biblioteca, Nuevo usuario).
+// "html" le da a esta regla más peso que la de Material, que se carga después.
+html .mat-mdc-dialog-container .mat-mdc-dialog-title + .mat-mdc-dialog-content {
+  padding-top: 8px;
+}

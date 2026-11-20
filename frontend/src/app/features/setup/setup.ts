@@ -1,40 +1,18 @@
 import { Component, inject, signal } from '@angular/core';
-import {
-  AbstractControl,
-  FormGroupDirective,
-  NgForm,
-  NonNullableFormBuilder,
-  ReactiveFormsModule,
-  ValidationErrors,
-  Validators,
-} from '@angular/forms';
+import { FormField, form, maxLength, required, submit } from '@angular/forms/signals';
 import { MatButton } from '@angular/material/button';
-import { ErrorStateMatcher } from '@angular/material/core';
 import { MatError, MatFormField, MatHint, MatLabel } from '@angular/material/form-field';
 import { MatInput } from '@angular/material/input';
 import { Router } from '@angular/router';
 
 import { SessionStore } from '../../core/auth/session-store';
 import { describeError } from '../../shared/describe-error';
-
-/** Las dos contraseñas tienen que coincidir. */
-function passwordsMatch(group: AbstractControl): ValidationErrors | null {
-  return group.get('password')?.value === group.get('confirm')?.value
-    ? null
-    : { passwordsMismatch: true };
-}
-
-/** Marca en rojo la confirmación también cuando no coincide con la contraseña. */
-class ConfirmErrorMatcher implements ErrorStateMatcher {
-  isErrorState(control: AbstractControl | null, form: FormGroupDirective | NgForm | null): boolean {
-    return !!control?.touched && (control.invalid || !!form?.hasError('passwordsMismatch'));
-  }
-}
+import { MIN_PASSWORD_LENGTH, newPasswordRules } from '../../shared/password-fields';
 
 /** Asistente de primer arranque: crea la cuenta de administrador. */
 @Component({
   selector: 'app-setup',
-  imports: [ReactiveFormsModule, MatButton, MatError, MatFormField, MatHint, MatInput, MatLabel],
+  imports: [FormField, MatButton, MatError, MatFormField, MatHint, MatInput, MatLabel],
   template: `
     <main class="page">
       <section class="panel" aria-labelledby="setup-title">
@@ -45,12 +23,12 @@ class ConfirmErrorMatcher implements ErrorStateMatcher {
           a crear a los demás usuarios.
         </p>
 
-        <form [formGroup]="form" (ngSubmit)="submit()">
+        <form novalidate (submit)="$event.preventDefault(); create()">
           <mat-form-field appearance="outline">
             <mat-label>Tu nombre</mat-label>
-            <input matInput formControlName="displayName" autocomplete="name" />
+            <input matInput [formField]="setupForm.displayName" autocomplete="name" />
             <mat-error>
-              @if (form.controls.displayName.hasError('maxlength')) {
+              @if (setupForm.displayName().getError('maxLength')) {
                 El nombre puede tener hasta 100 caracteres.
               } @else {
                 Escribe tu nombre.
@@ -62,7 +40,7 @@ class ConfirmErrorMatcher implements ErrorStateMatcher {
             <mat-label>Usuario</mat-label>
             <input
               matInput
-              formControlName="userName"
+              [formField]="setupForm.userName"
               autocomplete="username"
               autocapitalize="none"
             />
@@ -72,9 +50,14 @@ class ConfirmErrorMatcher implements ErrorStateMatcher {
 
           <mat-form-field appearance="outline">
             <mat-label>Contraseña</mat-label>
-            <input matInput type="password" formControlName="password" autocomplete="new-password" />
-            <mat-hint>Al menos 8 caracteres.</mat-hint>
-            <mat-error>La contraseña debe tener al menos 8 caracteres.</mat-error>
+            <input
+              matInput
+              type="password"
+              [formField]="setupForm.password"
+              autocomplete="new-password"
+            />
+            <mat-hint>Al menos {{ minPassword }} caracteres.</mat-hint>
+            <mat-error>La contraseña debe tener al menos {{ minPassword }} caracteres.</mat-error>
           </mat-form-field>
 
           <mat-form-field appearance="outline">
@@ -82,12 +65,11 @@ class ConfirmErrorMatcher implements ErrorStateMatcher {
             <input
               matInput
               type="password"
-              formControlName="confirm"
+              [formField]="setupForm.confirm"
               autocomplete="new-password"
-              [errorStateMatcher]="confirmMatcher"
             />
             <mat-error>
-              @if (form.controls.confirm.hasError('required')) {
+              @if (setupForm.confirm().getError('required')) {
                 Repite la contraseña.
               } @else {
                 Las contraseñas no coinciden.
@@ -110,35 +92,33 @@ export class SetupPage {
   private readonly session = inject(SessionStore);
   private readonly router = inject(Router);
 
-  protected readonly confirmMatcher = new ConfirmErrorMatcher();
+  protected readonly minPassword = MIN_PASSWORD_LENGTH;
   protected readonly saving = signal(false);
   protected readonly error = signal<string | null>(null);
-  protected readonly form = inject(NonNullableFormBuilder).group(
-    {
-      displayName: ['', [Validators.required, Validators.maxLength(100)]],
-      userName: ['', Validators.required],
-      password: ['', [Validators.required, Validators.minLength(8)]],
-      confirm: ['', Validators.required],
-    },
-    { validators: passwordsMatch },
-  );
 
-  protected async submit(): Promise<void> {
-    if (this.form.invalid) {
-      this.form.markAllAsTouched();
-      return;
-    }
+  // Signal Forms: el modelo es una señal y el formulario es un árbol de campos sobre ella.
+  private readonly model = signal({ displayName: '', userName: '', password: '', confirm: '' });
+  protected readonly setupForm = form(this.model, (path) => {
+    required(path.displayName);
+    maxLength(path.displayName, 100);
+    required(path.userName);
+    newPasswordRules(path.password, path.confirm);
+  });
 
-    this.saving.set(true);
-    this.error.set(null);
-    const { displayName, userName, password } = this.form.getRawValue();
-    try {
-      await this.session.setup(displayName.trim(), userName.trim(), password);
-      await this.router.navigateByUrl('/');
-    } catch (error) {
-      this.error.set(describeError(error));
-    } finally {
-      this.saving.set(false);
-    }
+  protected async create(): Promise<void> {
+    // submit() marca los campos como tocados (así se ven los errores) y solo corre si todo es válido.
+    await submit(this.setupForm, async () => {
+      this.saving.set(true);
+      this.error.set(null);
+      const { displayName, userName, password } = this.model();
+      try {
+        await this.session.setup(displayName.trim(), userName.trim(), password);
+        await this.router.navigateByUrl('/');
+      } catch (error) {
+        this.error.set(describeError(error));
+      } finally {
+        this.saving.set(false);
+      }
+    });
   }
 }

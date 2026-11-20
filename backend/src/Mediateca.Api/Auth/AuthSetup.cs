@@ -19,6 +19,19 @@ public sealed class LoginRateLimitOptions
     public TimeSpan Window { get; set; } = TimeSpan.FromMinutes(1);
 }
 
+/// <summary>Validez de la sesión (sección "Auth:Session").</summary>
+public sealed class SessionValidationOptions
+{
+    public const string Section = "Auth:Session";
+
+    /// <summary>
+    /// Cada cuánto vuelve la cookie a comprobarse contra la base de datos (sello de seguridad). Una sesión
+    /// cerrada desde el servidor (otro rol, otra contraseña, usuario borrado) deja de valer a más tardar en este
+    /// tiempo. Identity trae 30 minutos; aquí son 30 segundos. Cero comprueba en cada solicitud.
+    /// </summary>
+    public TimeSpan ValidationInterval { get; set; } = TimeSpan.FromSeconds(30);
+}
+
 public static class AuthSetup
 {
     /// <summary>
@@ -58,6 +71,14 @@ public static class AuthSetup
                 return Task.CompletedTask;
             };
         });
+
+        // El sello de seguridad de Identity cambia con la contraseña y con el rol (UpdateSecurityStampAsync). La
+        // cookie lo comprueba cada ValidationInterval: con un sello distinto, o con el usuario borrado, la sesión
+        // se rechaza y se vuelve a pedir el inicio de sesión.
+        services.AddOptions<SessionValidationOptions>().BindConfiguration(SessionValidationOptions.Section);
+        services.AddOptions<SecurityStampValidatorOptions>()
+            .Configure<IOptions<SessionValidationOptions>>((options, session) =>
+                options.ValidationInterval = session.Value.ValidationInterval);
 
         // Todo endpoint pide sesión salvo los marcados con AllowAnonymous.
         services.AddAuthorizationBuilder()

@@ -188,6 +188,8 @@ public static class DependencyInjection
             .AddRoles<IdentityRole<Guid>>()
             .AddEntityFrameworkStores<MediatecaDbContext>()
             .AddErrorDescriber<SpanishIdentityErrorDescriber>()
+            // Los tokens que usa UserManager.ResetPasswordAsync (restablecer la contraseña desde la administración).
+            .AddDefaultTokenProviders()
             .AddSignInManager();
 
         // Llaves que cifran la cookie de sesión y los tokens XSRF. En la base de datos sobreviven

@@ -217,6 +217,25 @@ En el selector aparecen con el nombre de la carpeta (`usuario`, `externo`). Desp
 
 **Seguridad.** Los discos se montan de solo lectura. Solo los administradores pueden explorar las carpetas del servidor. Las imágenes, los streams y los subtítulos solo salen de las carpetas de las bibliotecas o de las carpetas de medios, nunca de un archivo cualquiera.
 
+## Usuarios y permisos
+
+No hay registro público: el primer arranque crea al administrador y él crea las demás cuentas.
+
+1. **Crea al usuario.** Entra como administrador, abre **Administrar › Usuarios** y elige **Nuevo usuario**: nombre de usuario (con él inicia sesión; no se puede cambiar después), nombre visible, contraseña inicial (al menos 8 caracteres) y rol. Díselo a la persona; ella puede cambiarla desde **Mi cuenta**.
+2. **Dale bibliotecas.** En el mismo diálogo, marca las casillas de las bibliotecas que puede ver. Un usuario ve **solo** las que marcas: lo demás (detalle, imágenes, reproducción, subtítulos, progreso y las filas del inicio) responde como si no existiera. Sin ninguna casilla, no ve contenido. Puedes cambiarlas cuando quieras con **Editar**; el cambio se nota al instante, sin que la persona cierre sesión.
+3. **Elige el rol.**
+
+   | Rol | Qué puede |
+   |---|---|
+   | **Usuario** | Ve las bibliotecas que le marcaste, reproduce y guarda su propio progreso |
+   | **Administrador** | Además administra bibliotecas y usuarios, y **ve todas las bibliotecas**: sus casillas aparecen deshabilitadas y no se guardan |
+
+4. **Contraseña olvidada.** Con **Contraseña** pones una nueva a ese usuario (también desbloquea la cuenta si se bloqueó por intentos fallidos). Con **Eliminar** das de baja la cuenta, con su progreso y sus permisos.
+
+Reglas del administrador: no puede borrar su propia cuenta ni quitarse el rol, y siempre queda al menos un administrador (si dos se lo intentan quitar a la vez, solo se aplica uno). Para dar de baja a un administrador, primero pídele a otro que lo haga.
+
+**Sesiones.** Cambiar el rol o la contraseña de alguien, o borrarlo, cierra sus sesiones abiertas: la próxima vez que su navegador pregunte, la API responde 401 y la app lo lleva a iniciar sesión con el aviso "Tu sesión se cerró". Cada usuario cambia su nombre visible y su propia contraseña en **Mi cuenta** (menú del ícono de usuario, arriba a la derecha); al cambiar la contraseña, esa sesión sigue y las demás se cierran. La API comprueba las sesiones cada 30 segundos; se puede ajustar con `Auth:Session:ValidationInterval` en `appsettings.json` o con la variable de entorno `Auth__Session__ValidationInterval` de la API (por ejemplo `00:00:05`; `00:00:00` comprueba en cada solicitud).
+
 ## Reproductor, reescalado y subtítulos
 
 El video se ve con un reproductor propio: controles que se ocultan solos a los 3 segundos, barra de avance que se arrastra, volumen, pantalla completa y atajos de teclado (espacio o K, flechas ±10 s, M, C y F).

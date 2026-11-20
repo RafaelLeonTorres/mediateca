@@ -50,6 +50,13 @@ public class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetim
     /// <summary>La clave de OMDb de la prueba. Una subclase la deja vacía para probar la aplicación sin clave.</summary>
     protected virtual string? OmdbApiKey => "clave-de-prueba";
 
+    /// <summary>
+    /// Cada cuánto se vuelve a comprobar una sesión. Aquí casi nunca: al comprobarla la cookie se renueva, y ASP.NET
+    /// marca esa respuesta "no-cache, no-store", lo que taparía los encabezados de caché que se prueban en imágenes,
+    /// streams y subtítulos. Las pruebas de sesión usan <see cref="MediatecaApiFactorySesionAlInstante"/>.
+    /// </summary>
+    protected virtual string SessionValidationInterval => "01:00:00";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // La base "mediateca" no existe en el contenedor: la app tiene que crearla al arrancar.
@@ -69,6 +76,7 @@ public class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetim
                 // Las pruebas inician sesión muchas veces desde la misma IP: con el límite real
                 // (5 por minuto) la mayoría recibiría 429.
                 ["Auth:LoginRateLimit:PermitLimit"] = "1000",
+                ["Auth:Session:ValidationInterval"] = SessionValidationInterval,
                 // Sin el SQL de cada consulta en la salida de las pruebas.
                 ["Logging:LogLevel:Microsoft.EntityFrameworkCore"] = "Warning",
                 // El procesador de escaneos de las pruebas mira la cola cada 200 ms y no cada 3 s.
@@ -116,4 +124,14 @@ public class MediatecaApiFactory : WebApplicationFactory<Program>, IAsyncLifetim
 public sealed class MediatecaApiFactorySinClaveOmdb : MediatecaApiFactory
 {
     protected override string? OmdbApiKey => "";
+}
+
+/// <summary>
+/// Las sesiones se comprueban en cada solicitud (y no cada 30 s): las pruebas de contraseña, rol y baja necesitan que
+/// una sesión cerrada deje de valer al instante. Como cada respuesta renueva la cookie, aquí no se prueban
+/// encabezados de caché.
+/// </summary>
+public sealed class MediatecaApiFactorySesionAlInstante : MediatecaApiFactory
+{
+    protected override string SessionValidationInterval => "00:00:00";
 }

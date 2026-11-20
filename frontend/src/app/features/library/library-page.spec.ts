@@ -85,6 +85,42 @@ describe('LibraryPage', () => {
     request.flush({ items: [], total: 0, page: 1, pageSize: 48 });
   });
 
+  it('si la biblioteca no existe o no es de las suyas, lo dice en lugar de quedarse cargando', async () => {
+    const { fixture, http, element } = render();
+
+    // La API responde 404 en los dos casos, para no revelar que la biblioteca existe.
+    itemsRequest(http).flush(null, { status: 404, statusText: 'Not Found' });
+    http.expectOne('/api/libraries').flush([]);
+    http.expectOne('/api/libraries/lib1/filters').flush(null, { status: 404, statusText: 'Not Found' });
+    TestBed.tick();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(element.textContent).toContain('No se encontró la biblioteca');
+    expect(element.querySelector('mat-progress-bar')).toBeNull();
+    expect(element.querySelector('form.filters')).toBeNull();
+    expect(element.querySelector('a[href="/"]')?.textContent).toContain('Volver al inicio');
+  });
+
+  it('si fallan los filtros, la cuadrícula se ve igual', async () => {
+    const { fixture, http, element } = render();
+
+    itemsRequest(http).flush({
+      items: [{ id: 'i1', kind: 'Movie', title: 'Heat', year: 1995, artist: null, hasImage: false }],
+      total: 1,
+      page: 1,
+      pageSize: 48,
+    });
+    http.expectOne('/api/libraries').flush([]);
+    http.expectOne('/api/libraries/lib1/filters').flush(null, { status: 500, statusText: 'Error' });
+    TestBed.tick();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(element.textContent).toContain('Heat');
+    expect(element.textContent).not.toContain('No se encontró la biblioteca');
+  });
+
   it('sin elementos y sin filtros, avisa que la biblioteca está vacía', async () => {
     const { fixture, http, element } = render();
 

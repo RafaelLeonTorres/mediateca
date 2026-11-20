@@ -41,7 +41,7 @@ import { MusicBar } from '../music-bar/music-bar';
         @if (session.user()?.isAdmin) {
           <a
             matButton="text"
-            routerLink="/admin/bibliotecas"
+            routerLink="/admin"
             routerLinkActive="active"
             ariaCurrentWhenActive="page"
           >
@@ -60,6 +60,10 @@ import { MusicBar } from '../music-bar/music-bar';
       </button>
       <mat-menu #userMenu="matMenu">
         <p class="menu-user">{{ session.user()?.displayName }}</p>
+        <a mat-menu-item routerLink="/mi-cuenta">
+          <mat-icon aria-hidden="true">manage_accounts</mat-icon>
+          <span>Mi cuenta</span>
+        </a>
         <button mat-menu-item type="button" (click)="logout()" [disabled]="loggingOut()">
           <mat-icon aria-hidden="true">logout</mat-icon>
           <span>Cerrar sesión</span>

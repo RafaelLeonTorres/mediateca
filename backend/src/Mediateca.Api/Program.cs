@@ -4,6 +4,7 @@ using Mediateca.Api.Items;
 using Mediateca.Api.Libraries;
 using Mediateca.Api.Metadata;
 using Mediateca.Api.Setup;
+using Mediateca.Api.Users;
 using Mediateca.Infrastructure;
 using Mediateca.Infrastructure.Persistence;
 using Mediateca.Infrastructure.Storage;
@@ -51,6 +52,8 @@ app.MapGet("/api/health", () => TypedResults.Ok(new HealthResponse("ok", DateTim
 
 app.MapSetupEndpoints();
 app.MapAuthEndpoints();
+app.MapAdminUserEndpoints();
+app.MapAccountEndpoints();
 app.MapAdminLibraryEndpoints();
 app.MapAdminScanScheduleEndpoints();
 app.MapAdminMetadataEndpoints();

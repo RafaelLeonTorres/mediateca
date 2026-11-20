@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Component, DestroyRef, computed, inject, input, linkedSignal } from '@angular/core';
 import { MatButton } from '@angular/material/button';
 import { MatFormField, MatLabel } from '@angular/material/form-field';
@@ -22,6 +23,11 @@ import { PosterCard } from '../../shared/poster-card/poster-card';
 /** Espera, en milisegundos, antes de buscar mientras se escribe. */
 export const SEARCH_DEBOUNCE_MS = 300;
 
+/** La API responde 404 tanto si la biblioteca no existe como si el usuario no tiene acceso a ella. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof HttpErrorResponse && error.status === 404;
+}
+
 /** Cuadrícula de pósters de una biblioteca, con búsqueda, filtros, orden y paginación. */
 @Component({
   selector: 'app-library-page',
@@ -38,120 +44,126 @@ export const SEARCH_DEBOUNCE_MS = 300;
     RouterLink,
   ],
   template: `
-    <header class="head">
-      <h1>{{ library()?.name ?? 'Biblioteca' }}</h1>
-      @if (library(); as current) {
-        <p class="type">{{ typeLabel(current.type) }}</p>
-      }
-    </header>
-
-    <form class="filters" role="search" (submit)="$event.preventDefault()">
-      <mat-form-field appearance="outline" class="search">
-        <mat-label>Buscar por título</mat-label>
-        <input
-          matInput
-          type="search"
-          autocomplete="off"
-          [value]="searchText()"
-          (input)="onSearch($any($event.target).value)"
-        />
-        <mat-icon matSuffix aria-hidden="true">search</mat-icon>
-      </mat-form-field>
-
-      <mat-form-field appearance="outline">
-        <mat-label>Género</mat-label>
-        <mat-select [value]="query().genre" (selectionChange)="setGenre($event.value)">
-          <mat-option value="">Todos</mat-option>
-          @for (genre of genres(); track genre) {
-            <mat-option [value]="genre">{{ genre }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
-
-      <mat-form-field appearance="outline">
-        <mat-label>Año</mat-label>
-        <mat-select [value]="yearValue()" (selectionChange)="setYear($event.value)">
-          <mat-option value="">Todos</mat-option>
-          @for (year of years(); track year) {
-            <mat-option [value]="year.toString()">{{ year }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
-
-      <mat-form-field appearance="outline">
-        <mat-label>Ordenar por</mat-label>
-        <mat-select [value]="query().sort" (selectionChange)="setSort($event.value)">
-          @for (option of sortOptions; track option.value) {
-            <mat-option [value]="option.value">{{ option.label }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
-    </form>
-
-    @if (page.isLoading()) {
-      <mat-progress-bar mode="indeterminate" aria-label="Cargando elementos" />
-    }
-
-    @if (page.error()) {
-      <p class="error" role="alert">
-        No se pudo cargar la biblioteca. Puede que no exista o que no tengas acceso.
-      </p>
-    } @else if (ready()) {
-      @if (items().length > 0) {
-        <p class="count" aria-live="polite">
-          {{ total() }} {{ total() === 1 ? 'resultado' : 'resultados' }}
-        </p>
-        <ul class="grid">
-          @for (item of items(); track item.id) {
-            <li>
-              <app-poster-card
-                [id]="item.id"
-                [title]="item.title"
-                [kind]="item.kind"
-                [subtitle]="item.artist ?? item.year?.toString() ?? ''"
-                [hasImage]="item.hasImage"
-              />
-            </li>
-          }
-        </ul>
-
-        @if (totalPages() > 1) {
-          <nav class="pager" aria-label="Paginación">
-            <button
-              matButton="outlined"
-              type="button"
-              [disabled]="query().page <= 1"
-              (click)="goTo(query().page - 1)"
-            >
-              Anterior
-            </button>
-            <span aria-live="polite">Página {{ query().page }} de {{ totalPages() }}</span>
-            <button
-              matButton="outlined"
-              type="button"
-              [disabled]="query().page >= totalPages()"
-              (click)="goTo(query().page + 1)"
-            >
-              Siguiente
-            </button>
-          </nav>
+    @if (notFound()) {
+      <section class="empty" aria-labelledby="missing-title">
+        <h1 id="missing-title">No se encontró la biblioteca</h1>
+        <p>Puede que se haya eliminado o que no tengas acceso.</p>
+        <a matButton="filled" routerLink="/">Volver al inicio</a>
+      </section>
+    } @else {
+      <header class="head">
+        <h1>{{ library()?.name ?? 'Biblioteca' }}</h1>
+        @if (library(); as current) {
+          <p class="type">{{ typeLabel(current.type) }}</p>
         }
-      } @else if (hasFilters()) {
-        <section class="empty" aria-labelledby="empty-title">
-          <h2 id="empty-title">Sin resultados</h2>
-          <p>Ningún elemento coincide con la búsqueda o los filtros.</p>
-          <button matButton="filled" type="button" (click)="clearFilters()">Quitar filtros</button>
-        </section>
-      } @else {
-        <section class="empty" aria-labelledby="empty-title">
-          <h2 id="empty-title">Esta biblioteca está vacía</h2>
-          @if (session.user()?.isAdmin) {
-            <p>Escanea la biblioteca para que Mediateca encuentre tus archivos.</p>
-            <a matButton="filled" routerLink="/admin/bibliotecas">Ir a la administración</a>
-          } @else {
-            <p>Todavía no hay nada aquí. Pídele al administrador que escanee la biblioteca.</p>
+      </header>
+
+      <form class="filters" role="search" (submit)="$event.preventDefault()">
+        <mat-form-field appearance="outline" class="search">
+          <mat-label>Buscar por título</mat-label>
+          <input
+            matInput
+            type="search"
+            autocomplete="off"
+            [value]="searchText()"
+            (input)="onSearch($any($event.target).value)"
+          />
+          <mat-icon matSuffix aria-hidden="true">search</mat-icon>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Género</mat-label>
+          <mat-select [value]="query().genre" (selectionChange)="setGenre($event.value)">
+            <mat-option value="">Todos</mat-option>
+            @for (genre of genres(); track genre) {
+              <mat-option [value]="genre">{{ genre }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Año</mat-label>
+          <mat-select [value]="yearValue()" (selectionChange)="setYear($event.value)">
+            <mat-option value="">Todos</mat-option>
+            @for (year of years(); track year) {
+              <mat-option [value]="year.toString()">{{ year }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Ordenar por</mat-label>
+          <mat-select [value]="query().sort" (selectionChange)="setSort($event.value)">
+            @for (option of sortOptions; track option.value) {
+              <mat-option [value]="option.value">{{ option.label }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </form>
+
+      @if (page.isLoading()) {
+        <mat-progress-bar mode="indeterminate" aria-label="Cargando elementos" />
+      }
+
+      @if (page.error()) {
+        <p class="error" role="alert">No se pudo cargar la biblioteca. Inténtalo de nuevo.</p>
+      } @else if (ready()) {
+        @if (items().length > 0) {
+          <p class="count" aria-live="polite">
+            {{ total() }} {{ total() === 1 ? 'resultado' : 'resultados' }}
+          </p>
+          <ul class="grid">
+            @for (item of items(); track item.id) {
+              <li>
+                <app-poster-card
+                  [id]="item.id"
+                  [title]="item.title"
+                  [kind]="item.kind"
+                  [subtitle]="item.artist ?? item.year?.toString() ?? ''"
+                  [hasImage]="item.hasImage"
+                />
+              </li>
+            }
+          </ul>
+
+          @if (totalPages() > 1) {
+            <nav class="pager" aria-label="Paginación">
+              <button
+                matButton="outlined"
+                type="button"
+                [disabled]="query().page <= 1"
+                (click)="goTo(query().page - 1)"
+              >
+                Anterior
+              </button>
+              <span aria-live="polite">Página {{ query().page }} de {{ totalPages() }}</span>
+              <button
+                matButton="outlined"
+                type="button"
+                [disabled]="query().page >= totalPages()"
+                (click)="goTo(query().page + 1)"
+              >
+                Siguiente
+              </button>
+            </nav>
           }
-        </section>
+        } @else if (hasFilters()) {
+          <section class="empty" aria-labelledby="empty-title">
+            <h2 id="empty-title">Sin resultados</h2>
+            <p>Ningún elemento coincide con la búsqueda o los filtros.</p>
+            <button matButton="filled" type="button" (click)="clearFilters()">Quitar filtros</button>
+          </section>
+        } @else {
+          <section class="empty" aria-labelledby="empty-title">
+            <h2 id="empty-title">Esta biblioteca está vacía</h2>
+            @if (session.user()?.isAdmin) {
+              <p>Escanea la biblioteca para que Mediateca encuentre tus archivos.</p>
+              <a matButton="filled" routerLink="/admin/bibliotecas">Ir a la administración</a>
+            } @else {
+              <p>Todavía no hay nada aquí. Pídele al administrador que escanee la biblioteca.</p>
+            }
+          </section>
+        }
       }
     }
   `,
@@ -208,6 +220,7 @@ export const SEARCH_DEBOUNCE_MS = 300;
       background: var(--mat-sys-surface-container-low);
     }
 
+    .empty h1,
     .empty h2 {
       margin: 0 0 8px;
       font: var(--mat-sys-title-medium);
@@ -250,14 +263,24 @@ export class LibraryPage {
     () => this.query(),
   );
 
+  // value() lanza si el recurso está en error (por ejemplo, un 404): primero se pregunta si tiene valor.
   protected readonly library = computed(() =>
-    this.libraries.value()?.find((l) => l.id === this.id()),
+    this.libraries.hasValue() ? this.libraries.value()?.find((l) => l.id === this.id()) : undefined,
   );
-  protected readonly genres = computed(() => this.filters.value()?.genres ?? []);
-  protected readonly years = computed(() => this.filters.value()?.years ?? []);
-  protected readonly ready = computed(() => this.page.value() !== undefined);
-  protected readonly items = computed(() => this.page.value()?.items ?? []);
-  protected readonly total = computed(() => this.page.value()?.total ?? 0);
+  protected readonly genres = computed(() =>
+    this.filters.hasValue() ? (this.filters.value()?.genres ?? []) : [],
+  );
+  protected readonly years = computed(() =>
+    this.filters.hasValue() ? (this.filters.value()?.years ?? []) : [],
+  );
+  private readonly pageValue = computed(() => (this.page.hasValue() ? this.page.value() : undefined));
+  protected readonly ready = computed(() => this.pageValue() !== undefined);
+  protected readonly items = computed(() => this.pageValue()?.items ?? []);
+  protected readonly total = computed(() => this.pageValue()?.total ?? 0);
+  /** La biblioteca no existe o no es de las que puede ver este usuario. */
+  protected readonly notFound = computed(
+    () => isNotFound(this.page.error()) || isNotFound(this.filters.error()),
+  );
   protected readonly totalPages = computed(() =>
     Math.max(1, Math.ceil(this.total() / ITEMS_PAGE_SIZE)),
   );
