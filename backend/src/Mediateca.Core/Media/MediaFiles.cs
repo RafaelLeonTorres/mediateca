@@ -6,7 +6,7 @@ namespace Mediateca.Core.Media;
 public static class MediaFiles
 {
     private static readonly HashSet<string> VideoExtensions =
-        new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".m4v", ".webm", ".mkv" };
+        new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".m4v", ".mov", ".webm", ".mkv" };
 
     private static readonly HashSet<string> AudioExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav" };
@@ -23,6 +23,10 @@ public static class MediaFiles
         Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".mp4" or ".m4v" => "video/mp4",
+            // QuickTime (.mov) tiene la misma estructura que MP4. Los navegadores aceptan video/mp4 y no siempre
+            // video/quicktime, así que se sirve como MP4; si sus códecs no son compatibles (ProRes, por ejemplo),
+            // el reproductor ofrece descargarlo.
+            ".mov" => "video/mp4",
             ".webm" => "video/webm",
             ".mkv" => "video/x-matroska",
             ".mp3" => "audio/mpeg",

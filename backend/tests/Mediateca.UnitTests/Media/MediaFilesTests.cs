@@ -10,6 +10,7 @@ public class MediaFilesTests
     [InlineData("Big Buck Bunny (2008).mp4")]
     [InlineData("Mi Serie S01E02.MKV")]
     [InlineData("clip.webm")]
+    [InlineData("Tears of Steel (2012).MOV")]
     public void Reconoce_video(string archivo) => Assert.True(MediaFiles.IsVideo(archivo));
 
     [Theory]
@@ -32,6 +33,7 @@ public class MediaFilesTests
     [InlineData(LibraryType.Music, "pista.mp3", true)]
     [InlineData(LibraryType.Music, "pelicula.mp4", false)]
     [InlineData(LibraryType.Anime, "episodio.mkv", true)]
+    [InlineData(LibraryType.Movies, "pelicula.mov", true)]
     [InlineData(LibraryType.Movies, "pista.flac", false)]
     public void Filtra_por_tipo_de_biblioteca(LibraryType tipo, string archivo, bool esperado) =>
         Assert.Equal(esperado, MediaFiles.BelongsTo(tipo, archivo));
@@ -39,6 +41,7 @@ public class MediaFilesTests
     [Theory]
     [InlineData("pelicula.mp4", "video/mp4")]
     [InlineData("pelicula.M4V", "video/mp4")]
+    [InlineData("pelicula.mov", "video/mp4")]
     [InlineData("clip.webm", "video/webm")]
     [InlineData("serie.mkv", "video/x-matroska")]
     [InlineData("pista.mp3", "audio/mpeg")]
